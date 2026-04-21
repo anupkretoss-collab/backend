@@ -27,14 +27,18 @@ app.get('/api/health', (req, res) => {
 });
 
 // Run DB migrations then start server
+// Start the server first so Render health checks pass,
+// then attempt DB migrations in the background.
+app.listen(PORT, () => {
+  console.log(`🚀 Backend server running on http://localhost:${PORT}`);
+});
+
 runMigrations()
   .then(() => {
-    app.listen(PORT, () => {
-      console.log(`🚀 Backend server running on http://localhost:${PORT}`);
-    });
+    console.log('✅ Database ready.');
   })
   .catch(err => {
-    console.error('❌ Failed to run DB migrations:', err.message);
-    console.error('   Check your DB_HOST, DB_USER, DB_PASSWORD, DB_NAME in .env');
-    process.exit(1);
+    console.warn('⚠️  DB not available:', err.message);
+    console.warn('   API routes requiring DB will return 503 until a database is connected.');
+    console.warn('   Set DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME as environment variables.');
   });
