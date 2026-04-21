@@ -1,0 +1,5 @@
+node_modules
+.env
+.DS_Store
+# Keep data dir but not its contents (except the seed file)
+data/*.json
