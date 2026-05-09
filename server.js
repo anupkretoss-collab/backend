@@ -24,6 +24,66 @@ app.use(
   })
 );
 
+const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY;
+const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET_KEY;
+
+app.get("/", (req, res) => {
+  res.send("Backend running");
+});
+
+
+app.get("/api/auth/callback", async (req, res) => {
+  try {
+    const { shop, code } = req.query;
+
+    if (!shop || !code) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing shop or code",
+      });
+    }
+
+    const tokenResponse = await axios.post(
+      `https://${shop}/admin/oauth/access_token`,
+      {
+        client_id: SHOPIFY_API_KEY,
+        client_secret: SHOPIFY_API_SECRET,
+        code,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    const accessToken = tokenResponse.data.access_token;
+
+    console.log("✅ ACCESS TOKEN:", accessToken);
+
+    // Save token into DB here
+
+    res.json({
+      success: true,
+      shop,
+      accessToken,
+    });
+
+  } catch (error) {
+    console.log(
+      "❌ SHOPIFY ERROR:",
+      error.response?.data || error.message
+    );
+
+    res.status(500).json({
+      success: false,
+      error: error.response?.data || error.message,
+    });
+  }
+});
+
+app.use(cors());
+
 app.use(express.json({ limit: '10mb' }));
 
 // Routes
