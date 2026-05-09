@@ -16,7 +16,14 @@ const PORT = process.env.PORT || 3000;
 // Capture raw body for Shopify HMAC validation
 app.use('/api/webhooks', webhookRoutes);
 
-app.use(cors());
+app.use(cors({
+  origin: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
+app.options('*', cors());
 
 app.use(express.json({ limit: '10mb' }));
 
