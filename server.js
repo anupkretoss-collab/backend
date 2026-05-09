@@ -25,7 +25,7 @@ app.use(
 );
 
 const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY;
-const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET_KEY;
+const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET_TOKEN_KEY;
 
 app.get("/", (req, res) => {
   res.send("Backend running");
