@@ -6,8 +6,10 @@ import {
   bulkRemoveTag,
   markOrdersFulfilled,
   fetchOrdersByTag,
+  fetchOrder,
 } from '../services/shopify.js';
 import { readLog, isDelayed } from '../services/delayedLog.js';
+import { upsertOrder } from './orders.js';
 
 const router = express.Router();
 
@@ -380,6 +382,22 @@ router.post('/fulfill', authenticateToken, async (req, res) => {
   try {
     const { orderIds = [], notifyCustomer = true } = req.body;
     const results = await markOrdersFulfilled(orderIds, notifyCustomer);
+    
+    // Sync updated fulfilled orders into DB
+    for (const result of results) {
+      if (result.success) {
+        try {
+          const updatedOrder = await fetchOrder(result.id);
+          await upsertOrder(updatedOrder);
+        } catch (err) {
+          console.error(
+            `Failed to sync fulfilled order ${result.id}:`,
+            err.message
+          );
+        }
+      }
+    }
+
     const failed = results.filter(r => !r.success);
 
     res.json({
@@ -389,6 +407,7 @@ router.post('/fulfill', authenticateToken, async (req, res) => {
       errors: failed,
     });
   } catch (err) {
+    console.error('Fulfillment error:', err);
     res.status(500).json({ message: err.message });
   }
 });

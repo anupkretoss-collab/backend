@@ -1,25 +1,30 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import axios from 'axios';
 dotenv.config();
 
 import { runMigrations } from './services/db.js';
-import authRoutes     from './routes/auth.js';
-import ordersRoutes   from './routes/orders.js';
+import authRoutes from './routes/auth.js';
+import ordersRoutes from './routes/orders.js';
 import preordersRoutes from './routes/preorders.js';
-import delayedRoutes  from './routes/delayed.js';
+import delayedRoutes from './routes/delayed.js';
+import webhookRoutes from './routes/webhooks.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+// Capture raw body for Shopify HMAC validation
+app.use('/api/webhooks', webhookRoutes);
 
 app.use(cors());
+
 app.use(express.json({ limit: '10mb' }));
 
 // Routes
-app.use('/api/auth',      authRoutes);
-app.use('/api/orders',    ordersRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/orders', ordersRoutes);
 app.use('/api/preorders', preordersRoutes);
-app.use('/api/delayed',   delayedRoutes);
+app.use('/api/delayed', delayedRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -27,14 +32,18 @@ app.get('/api/health', (req, res) => {
 });
 
 // Run DB migrations then start server
+// Start the server first so Render health checks pass,
+// then attempt DB migrations in the background.
+app.listen(PORT, () => {
+  console.log(`🚀 Backend server running on http://localhost:${PORT}`);
+});
+
 runMigrations()
   .then(() => {
-    app.listen(PORT, () => {
-      console.log(`🚀 Backend server running on http://localhost:${PORT}`);
-    });
+    console.log('✅ Database ready.');
   })
   .catch(err => {
-    console.error('❌ Failed to run DB migrations:', err.message);
-    console.error('   Check your DB_HOST, DB_USER, DB_PASSWORD, DB_NAME in .env');
-    process.exit(1);
+    console.warn('⚠️  DB not available:', err.message);
+    console.warn('   API routes requiring DB will return 503 until a database is connected.');
+    console.warn('   Set DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME as environment variables.');
   });
