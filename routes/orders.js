@@ -10,6 +10,8 @@ import XLSX from 'xlsx-js-style';
 
 const router = express.Router();
 
+const backgroundJobs = new Map();
+
 // ─── Upsert a single Shopify order into MySQL ─────────────────────────────────
 export async function upsertOrder(order) {
   const c = order.customer || {};
@@ -2338,64 +2340,437 @@ router.post('/sync', authenticateToken, async (req, res) => {
   }
 });
 
-// ─── POST /api/orders/bulk-tag — Add a tag to multiple orders ────────────────
-router.post('/bulk-tag', authenticateToken, async (req, res) => {
-  try {
-    const { orderIds, tag } = req.body;
-    if (!orderIds || !Array.isArray(orderIds) || !tag) {
-      return res.status(400).json({ message: 'orderIds array and tag string are required' });
+router.get(
+  '/job-status/:jobId',
+  authenticateToken,
+  async (req, res) => {
+
+    const job =
+      backgroundJobs.get(
+        req.params.jobId
+      );
+
+    if (!job) {
+      return res.status(404).json({
+        message: 'Job not found'
+      });
     }
 
-    // Import bulkTagOrders dynamically to avoid circular dependency if any, or just import it at top
-    const { bulkTagOrders } = await import('../services/shopify.js');
-    const results = await bulkTagOrders(orderIds, tag);
-
-    res.json({ message: 'Bulk tag process completed', results });
-  } catch (err) {
-    console.error('Bulk tag error:', err);
-    res.status(500).json({ message: 'Bulk tagging failed', error: err.message });
+    res.json(job);
   }
-});
+);
+
+// ─── POST /api/orders/bulk-tag — Add a tag to multiple orders ────────────────
+router.post(
+  '/bulk-tag',
+  authenticateToken,
+  async (req, res) => {
+
+    try {
+
+      const {
+        orderIds,
+        tag
+      } = req.body;
+
+      // ============================================
+      // VALIDATION
+      // ============================================
+
+      if (
+        !orderIds ||
+        !Array.isArray(orderIds) ||
+        !tag
+      ) {
+
+        return res.status(400).json({
+          message:
+            'orderIds array and tag string are required'
+        });
+      }
+
+      // ============================================
+      // CREATE BACKGROUND JOB
+      // ============================================
+
+      const jobId =
+        `tag_${Date.now()}`;
+
+      backgroundJobs.set(jobId, {
+        id: jobId,
+        type: 'bulk-tag',
+        status: 'processing',
+        progress: 0,
+        total: orderIds.length,
+        completed: 0,
+        failed: 0,
+        results: [],
+      });
+
+      // ============================================
+      // RETURN IMMEDIATELY
+      // ============================================
+
+      res.json({
+        success: true,
+        background: true,
+        jobId,
+        message:
+          'Tagging started in background'
+      });
+
+      // ============================================
+      // RUN BACKGROUND PROCESS
+      // ============================================
+
+      (async () => {
+
+        try {
+
+          // ============================================
+          // IMPORT SERVICES
+          // ============================================
+
+          const {
+            bulkTagOrders,
+            fetchOrder
+          } = await import(
+            '../services/shopify.js'
+          );
+
+          // ============================================
+          // UPDATE SHOPIFY TAGS
+          // ============================================
+
+          const {
+            results,
+            successfulIds
+          } =
+            await bulkTagOrders(
+              orderIds,
+              tag,
+
+              // progress callback
+              (progressData) => {
+
+                backgroundJobs.set(
+                  jobId,
+                  {
+                    ...backgroundJobs.get(jobId),
+                    ...progressData,
+                  }
+                );
+              }
+            );
+
+          // ============================================
+          // SYNC SUCCESSFUL ORDERS TO DB
+          // AFTER ALL TAGS UPDATED
+          // ============================================
+
+          for (const orderId of successfulIds) {
+
+            try {
+
+              console.log(
+                `🔄 Syncing order ${orderId}`
+              );
+
+              const updatedOrder =
+                await fetchOrder(orderId);
+
+              await upsertOrder(
+                updatedOrder
+              );
+
+              // prevent throttling
+              if (successfulIds.length > 1) {
+                await new Promise(resolve =>
+                  setTimeout(resolve, 3000)
+                );
+              }
+
+            } catch (syncErr) {
+
+              console.error(
+                `❌ Failed syncing order ${orderId}`,
+                syncErr.message
+              );
+            }
+          }
+
+          // ============================================
+          // FINAL COUNTS
+          // ============================================
+
+          const successCount =
+            results.filter(
+              r => r.success
+            ).length;
+
+          const failedCount =
+            results.filter(
+              r => !r.success
+            ).length;
+
+          // ============================================
+          // COMPLETE JOB
+          // ============================================
+
+          backgroundJobs.set(jobId, {
+            ...backgroundJobs.get(jobId),
+            status: 'completed',
+            progress: 100,
+            completed: successCount,
+            failed: failedCount,
+            results,
+          });
+
+          console.log(
+            `✅ Bulk tagging completed: ${successCount} success, ${failedCount} failed`
+          );
+
+        } catch (err) {
+
+          console.error(
+            '❌ Background bulk tag error:',
+            err
+          );
+
+          backgroundJobs.set(jobId, {
+            ...backgroundJobs.get(jobId),
+            status: 'failed',
+            error: err.message,
+          });
+        }
+
+      })();
+
+    } catch (err) {
+
+      console.error(
+        '❌ Bulk tag route error:',
+        err
+      );
+
+      res.status(500).json({
+        message:
+          'Bulk tagging failed',
+        error: err.message
+      });
+    }
+  }
+);
 
 // ─── POST /api/orders/bulk-fulfill — Fulfill multiple orders ────────────────
-router.post('/bulk-fulfill', authenticateToken, async (req, res) => {
-  try {
-    const { orderIds } = req.body;
-    if (!orderIds || !Array.isArray(orderIds)) {
-      return res.status(400).json({ message: 'orderIds array is required' });
-    }
+router.post(
+  '/bulk-fulfill',
+  authenticateToken,
+  async (req, res) => {
 
-    const {
-      markOrdersFulfilled,
-      fetchOrder,
-    } = await import('../services/shopify.js');
+    try {
 
-    const results = await markOrdersFulfilled(orderIds);
+      const {
+        orderIds
+      } = req.body;
 
-    // Sync updated fulfilled orders into DB
-    for (const result of results) {
-      if (result.success) {
-        try {
-          const updatedOrder = await fetchOrder(result.id);
+      // ============================================
+      // VALIDATION
+      // ============================================
 
-          await upsertOrder(updatedOrder);
-        } catch (err) {
-          console.error(
-            `Failed to sync fulfilled order ${result.id}:`,
-            err.message
-          );
-        }
+      if (
+        !orderIds ||
+        !Array.isArray(orderIds)
+      ) {
+
+        return res.status(400).json({
+          message:
+            'orderIds array is required'
+        });
       }
-    }
 
-    res.json({
-      message: 'Bulk fulfillment completed',
-      results,
-    });
-  } catch (err) {
-    console.error('Bulk fulfill error:', err);
-    res.status(500).json({ message: 'Bulk fulfillment failed', error: err.message });
+      // ============================================
+      // CREATE BACKGROUND JOB
+      // ============================================
+
+      const jobId =
+        `fulfill_${Date.now()}`;
+
+      backgroundJobs.set(jobId, {
+        id: jobId,
+        type: 'bulk-fulfill',
+        status: 'processing',
+        progress: 0,
+        total: orderIds.length,
+        completed: 0,
+        failed: 0,
+        results: [],
+      });
+
+      // ============================================
+      // IMMEDIATE RESPONSE
+      // ============================================
+
+      res.json({
+        success: true,
+        background: true,
+        jobId,
+        message:
+          'Bulk fulfillment started in background'
+      });
+
+      // ============================================
+      // RUN IN BACKGROUND
+      // ============================================
+
+      setTimeout(async () => {
+
+        try {
+
+          const {
+            markOrdersFulfilled,
+            fetchOrder,
+          } = await import(
+            '../services/shopify.js'
+          );
+
+          // ============================================
+          // START FULFILLMENT
+          // ============================================
+
+          const {
+            results,
+            successfulIds
+          } =
+            await markOrdersFulfilled(
+              orderIds,
+              true,
+
+              // progress callback
+              (progressData) => {
+
+                backgroundJobs.set(
+                  jobId,
+                  {
+                    ...backgroundJobs.get(jobId),
+                    ...progressData,
+                  }
+                );
+              }
+            );
+
+          // ============================================
+          // WAIT BEFORE SYNC
+          // Shopify needs time
+          // ============================================
+
+          console.log(
+            '⏳ Waiting before DB sync...'
+          );
+
+          if (successfulIds.length > 1) {
+
+            await new Promise(resolve =>
+              setTimeout(resolve, 15000)
+            );
+          }
+
+          // ============================================
+          // SYNC UPDATED ORDERS
+          // ============================================
+
+          for (const orderId of successfulIds) {
+
+            try {
+
+              console.log(
+                `🔄 Syncing fulfilled order ${orderId}`
+              );
+
+              const updatedOrder =
+                await fetchOrder(orderId);
+
+              await upsertOrder(
+                updatedOrder
+              );
+
+              if (successfulIds.length > 1) {
+                // avoid Shopify throttle
+                await new Promise(resolve =>
+                  setTimeout(resolve, 4000)
+                );
+              }
+
+            } catch (syncErr) {
+
+              console.error(
+                `❌ Failed syncing fulfilled order ${orderId}`,
+                syncErr.message
+              );
+            }
+          }
+
+          // ============================================
+          // FINAL COUNTS
+          // ============================================
+
+          const successCount =
+            results.filter(
+              r => r.success
+            ).length;
+
+          const failedCount =
+            results.filter(
+              r => !r.success
+            ).length;
+
+          // ============================================
+          // COMPLETE JOB
+          // ============================================
+
+          backgroundJobs.set(jobId, {
+            ...backgroundJobs.get(jobId),
+            status: 'completed',
+            progress: 100,
+            completed: successCount,
+            failed: failedCount,
+            results,
+          });
+
+          console.log(
+            `✅ Bulk fulfillment completed`
+          );
+
+        } catch (err) {
+
+          console.error(
+            '❌ Background fulfill error:',
+            err
+          );
+
+          backgroundJobs.set(jobId, {
+            ...backgroundJobs.get(jobId),
+            status: 'failed',
+            error: err.message,
+          });
+        }
+
+      }, orderIds.length > 1 ? 5000 : 0);
+
+    } catch (err) {
+
+      console.error(
+        '❌ Bulk fulfill route error:',
+        err
+      );
+
+      res.status(500).json({
+        message:
+          'Bulk fulfillment failed',
+        error: err.message
+      });
+    }
   }
-});
+);
 
 export default router;

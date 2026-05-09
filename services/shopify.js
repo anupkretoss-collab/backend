@@ -214,29 +214,150 @@ export async function fetchOrder(orderId) {
 }
 
 // ─── Add tag to orders (bulk) ─────────────────────────────────────────────────
-export async function bulkTagOrders(orderIds, tag) {
+export async function bulkTagOrders(
+  orderIds,
+  tag,
+  onProgress = () => { }
+) {
+
   const client = getClient();
+
   const results = [];
 
-  for (const id of orderIds) {
+  const successfulIds = [];
+
+  const sleep = (ms) =>
+    new Promise(resolve =>
+      setTimeout(resolve, ms)
+    );
+
+  let processed = 0;
+
+  for (const orderId of orderIds) {
+
     try {
-      // Fetch current tags
-      const res = await client.get({ path: `orders/${id}`, query: { fields: 'id,tags' } });
-      const current = res.body.order.tags || '';
-      const tagSet = new Set(current.split(',').map(t => t.trim()).filter(Boolean));
+
+      // ============================================
+      // GET CURRENT TAGS
+      // ============================================
+
+      const res =
+        await client.get({
+          path: `orders/${orderId}`,
+          query: {
+            fields: 'id,tags'
+          }
+        });
+
+      const currentTags =
+        res.body.order.tags || '';
+
+      // ============================================
+      // UNIQUE TAGS
+      // ============================================
+
+      const tagSet =
+        new Set(
+          currentTags
+            .split(',')
+            .map(t => t.trim())
+            .filter(Boolean)
+        );
+
       tagSet.add(tag);
-      const newTags = Array.from(tagSet).join(', ');
+
+      const newTags =
+        Array.from(tagSet)
+          .join(', ');
+
+      // ============================================
+      // UPDATE SHOPIFY ORDER
+      // ============================================
 
       await client.put({
-        path: `orders/${id}`,
-        data: { order: { id, tags: newTags } },
+        path: `orders/${orderId}`,
+        data: {
+          order: {
+            id: orderId,
+            tags: newTags
+          }
+        },
+        type: 'application/json',
       });
-      results.push({ id, success: true });
+
+      successfulIds.push(orderId);
+
+      results.push({
+        id: orderId,
+        success: true,
+        tags: newTags
+      });
+
+      console.log(
+        `✅ Tagged order ${orderId}`
+      );
+
     } catch (err) {
-      results.push({ id, success: false, error: err.message });
+
+      const message =
+        err?.message || 'Unknown error';
+
+      console.error(
+        `❌ Tag failed for ${orderId}`,
+        message
+      );
+
+      results.push({
+        id: orderId,
+        success: false,
+        error: message
+      });
+
+      // ============================================
+      // THROTTLE RECOVERY
+      // ============================================
+
+      if (
+        message
+          .toLowerCase()
+          .includes('thrott')
+      ) {
+
+        console.log(
+          '⏳ Shopify throttled. Waiting 60 seconds...'
+        );
+
+        await sleep(60000);
+      }
     }
+
+    processed++;
+
+    // ============================================
+    // UPDATE PROGRESS
+    // ============================================
+
+    onProgress({
+      progress: Math.round(
+        (processed / orderIds.length) * 100
+      ),
+      completed:
+        results.filter(r => r.success).length,
+      failed:
+        results.filter(r => !r.success).length,
+    });
+
+    // ============================================
+    // RATE LIMIT PROTECTION
+    // ============================================
+
+    await sleep(4000);
   }
-  return results;
+
+  return {
+    results,
+    successfulIds
+  };
 }
 
 // ─── Remove tag from orders (bulk) ───────────────────────────────────────────
@@ -262,72 +383,171 @@ export async function bulkRemoveTag(orderIds, tag) {
 }
 
 // ─── Mark orders as fulfilled ─────────────────────────────────────────────────
-export async function markOrdersFulfilled(orderIds, notifyCustomer = true) {
+export async function markOrdersFulfilled(
+  orderIds,
+  notifyCustomer = true,
+  onProgress = () => { }
+) {
+
   const client = getClient();
+
   const results = [];
 
-  for (const id of orderIds) {
+  const successfulIds = [];
+
+  const sleep = (ms) =>
+    new Promise(resolve =>
+      setTimeout(resolve, ms)
+    );
+
+  let processed = 0;
+
+  for (const orderId of orderIds) {
+
     try {
 
-      // STEP 1: Get fulfillment orders
-      const fulfillmentRes = await client.get({
-        path: `orders/${id}/fulfillment_orders`,
-      });
+      console.log(
+        `🚚 Processing fulfillment for ${orderId}`
+      );
+
+      // ============================================
+      // GET FULFILLMENT ORDERS
+      // ============================================
+
+      const fulfillmentRes =
+        await client.get({
+          path: `orders/${orderId}/fulfillment_orders`,
+        });
 
       const fulfillmentOrders =
-        fulfillmentRes.body.fulfillment_orders || [];
+        fulfillmentRes.body
+          .fulfillment_orders || [];
 
       if (!fulfillmentOrders.length) {
+
         results.push({
-          id,
+          id: orderId,
           success: false,
-          error: 'No fulfillment orders found',
+          error:
+            'No fulfillment orders found',
         });
+
+        processed++;
+
         continue;
       }
 
-      // STEP 2: Prepare fulfillment payload
+      // ============================================
+      // PREPARE PAYLOAD
+      // ============================================
+
       const line_items_by_fulfillment_order =
-        fulfillmentOrders.map((fo) => ({
+        fulfillmentOrders.map(fo => ({
           fulfillment_order_id: fo.id,
         }));
 
-      // STEP 3: Create fulfillment
-      const fulfillmentCreate = await client.post({
-        path: 'fulfillments',
-        data: {
-          fulfillment: {
-            notify_customer: notifyCustomer,
-            line_items_by_fulfillment_order,
+      // ============================================
+      // CREATE FULFILLMENT
+      // ============================================
+
+      const fulfillmentCreate =
+        await client.post({
+          path: 'fulfillments',
+          data: {
+            fulfillment: {
+              notify_customer:
+                notifyCustomer,
+
+              line_items_by_fulfillment_order,
+            },
           },
-        },
-        type: 'application/json',
-      });
+          type: 'application/json',
+        });
+
+      successfulIds.push(orderId);
 
       results.push({
-        id,
+        id: orderId,
         success: true,
-        fulfillment: fulfillmentCreate.body,
+        fulfillment:
+          fulfillmentCreate.body,
       });
+
+      console.log(
+        `✅ Fulfilled order ${orderId}`
+      );
 
     } catch (err) {
 
-      let errorMessage = err.message;
+      let errorMessage =
+        err?.message || 'Unknown error';
 
-      // Better Shopify error logging
       if (err.response?.body) {
-        errorMessage = JSON.stringify(err.response.body);
+
+        errorMessage =
+          JSON.stringify(
+            err.response.body
+          );
       }
 
+      console.error(
+        `❌ Fulfillment failed ${orderId}`,
+        errorMessage
+      );
+
       results.push({
-        id,
+        id: orderId,
         success: false,
         error: errorMessage,
       });
+
+      // ============================================
+      // THROTTLE RECOVERY
+      // ============================================
+
+      if (
+        errorMessage
+          .toLowerCase()
+          .includes('thrott')
+      ) {
+
+        console.log(
+          '⏳ Shopify throttled. Waiting 60 seconds...'
+        );
+
+        await sleep(60000);
+      }
+    }
+
+    processed++;
+
+    // ============================================
+    // UPDATE PROGRESS
+    // ============================================
+
+    onProgress({
+      progress: Math.round(
+        (processed / orderIds.length) * 100
+      ),
+      completed:
+        results.filter(r => r.success).length,
+      failed:
+        results.filter(r => !r.success).length,
+    });
+
+    // ============================================
+    // RATE LIMIT PROTECTION
+    // ============================================
+
+    if (orderIds.length > 1) {
+      await sleep(5000);
     }
   }
 
-  return results;
+  return {
+    results,
+    successfulIds
+  };
 }
 
 // ─── Fetch orders by tag ──────────────────────────────────────────────────────

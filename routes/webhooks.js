@@ -103,54 +103,54 @@ router.post(
         // // PRODUCT WEBHOOKS
         // // ====================================================
 
-        // case 'products/create':
-        //   console.log(`🆕 Product created: ${payload.title}`);
+        case 'products/create':
+          console.log(`🆕 Product created: ${payload.title}`);
 
-        //   // TODO:
-        //   await upsertProduct(payload);
+          // TODO:
+          await upsertProduct(payload);
 
-        //   console.log(`✅ Product synced`);
-        //   break;
+          console.log(`✅ Product synced`);
+          break;
 
-        // case 'products/update':
-        //   console.log(`✏️ Product updated: ${payload.title}`);
+        case 'products/update':
+          console.log(`✏️ Product updated: ${payload.title}`);
 
-        //   // TODO:
-        //   await upsertProduct(payload);
+          // TODO:
+          await upsertProduct(payload);
 
-        //   console.log(`✅ Product updated`);
-        //   break;
+          console.log(`✅ Product updated`);
+          break;
 
-        // case 'products/delete':
-        //   console.log(`🗑️ Product deleted: ${payload.id}`);
+        case 'products/delete':
+          console.log(`🗑️ Product deleted: ${payload.id}`);
 
-        //   // TODO:
-        //   await deleteProduct(payload.id);
+          // TODO:
+          await deleteProduct(payload.id);
 
-        //   console.log(`✅ Product deleted`);
-        //   break;
+          console.log(`✅ Product deleted`);
+          break;
 
-        // // ====================================================
-        // // CUSTOMER WEBHOOKS
-        // // ====================================================
+        // ====================================================
+        // CUSTOMER WEBHOOKS
+        // ====================================================
 
-        // case 'customers/create':
-        //   console.log(`👤 Customer created: ${payload.email}`);
+        case 'customers/create':
+          console.log(`👤 Customer created: ${payload.email}`);
 
-        //   // TODO:
-        //   await upsertCustomer(payload);
+          // TODO:
+          await upsertCustomer(payload);
 
-        //   console.log(`✅ Customer synced`);
-        //   break;
+          console.log(`✅ Customer synced`);
+          break;
 
-        // case 'customers/update':
-        //   console.log(`✏️ Customer updated: ${payload.email}`);
+        case 'customers/update':
+          console.log(`✏️ Customer updated: ${payload.email}`);
 
-        //   // TODO:
-        //   await upsertCustomer(payload);
+          // TODO:
+          await upsertCustomer(payload);
 
-        //   console.log(`✅ Customer updated`);
-        //   break;
+          console.log(`✅ Customer updated`);
+          break;
 
         // // ====================================================
         // // APP WEBHOOKS
