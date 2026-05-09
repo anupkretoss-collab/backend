@@ -373,38 +373,56 @@ function buildOrderFilters(query) {
       searchValues.forEach(() => {
 
         conditions.push(`
-          (
-            CAST(order_number AS CHAR) LIKE ?
-            OR email LIKE ?
-            OR customer_first_name LIKE ?
-            OR customer_last_name LIKE ?
-            OR CONCAT(
-              COALESCE(customer_first_name, ''),
-              ' ',
-              COALESCE(customer_last_name, '')
-            ) LIKE ?
-            OR shipping_name LIKE ?
-            OR tags LIKE ?
-          )
-        `);
+        (
+          CAST(order_number AS CHAR) LIKE ?
+
+          OR LOWER(email) LIKE LOWER(?)
+
+          OR LOWER(customer_first_name) LIKE LOWER(?)
+
+          OR LOWER(customer_last_name) LIKE LOWER(?)
+
+          OR LOWER(
+              CONCAT(
+                COALESCE(customer_first_name, ''),
+                ' ',
+                COALESCE(customer_last_name, '')
+              )
+            ) LIKE LOWER(?)
+
+          OR LOWER(
+              CONCAT(
+                COALESCE(customer_last_name, ''),
+                ' ',
+                COALESCE(customer_first_name, '')
+              )
+            ) LIKE LOWER(?)
+
+          OR LOWER(shipping_name) LIKE LOWER(?)
+
+          OR LOWER(tags) LIKE LOWER(?)
+        )
+      `);
       });
 
       whereClauses.push(`
-        (${conditions.join(' OR ')})
-      `);
+      (${conditions.join(' OR ')})
+    `);
 
       searchValues.forEach(value => {
 
-        const pattern = `%${value}%`;
+        const pattern =
+          `%${value}%`;
 
         queryParams.push(
-          pattern,
-          pattern,
-          pattern,
-          pattern,
-          pattern,
-          pattern,
-          pattern
+          pattern, // order number
+          pattern, // email
+          pattern, // first name
+          pattern, // last name
+          pattern, // first last
+          pattern, // last first
+          pattern, // shipping
+          pattern  // tags
         );
       });
     }
@@ -460,34 +478,50 @@ function buildOrderFilters(query) {
       customerValues.forEach(() => {
 
         conditions.push(`
-          (
-            OR customer_first_name LIKE ?
-            OR customer_last_name LIKE ?
-            OR CONCAT(
+        (
+          LOWER(customer_first_name) LIKE LOWER(?)
+
+          OR LOWER(customer_last_name) LIKE LOWER(?)
+
+          OR LOWER(
+              CONCAT(
                 COALESCE(customer_first_name, ''),
                 ' ',
                 COALESCE(customer_last_name, '')
-              ) LIKE ?
-            OR customer_email LIKE ?
-            OR shipping_name LIKE ?
-          )
-        `);
+              )
+            ) LIKE LOWER(?)
+
+          OR LOWER(
+              CONCAT(
+                COALESCE(customer_last_name, ''),
+                ' ',
+                COALESCE(customer_first_name, '')
+              )
+            ) LIKE LOWER(?)
+
+          OR LOWER(customer_email) LIKE LOWER(?)
+
+          OR LOWER(shipping_name) LIKE LOWER(?)
+        )
+      `);
       });
 
       whereClauses.push(`
-        (${conditions.join(' OR ')})
-      `);
+      (${conditions.join(' OR ')})
+    `);
 
       customerValues.forEach(value => {
 
-        const pattern = `%${value}%`;
+        const pattern =
+          `%${value}%`;
 
         queryParams.push(
-          pattern,
-          pattern,
-          pattern,
-          pattern,
-          pattern
+          pattern, // first name
+          pattern, // last name
+          pattern, // first last
+          pattern, // last first
+          pattern, // email
+          pattern  // shipping
         );
       });
     }
@@ -1841,16 +1875,32 @@ router.get('/', authenticateToken, async (req, res) => {
           conditions.push(`
         (
           CAST(order_number AS CHAR) LIKE ?
-          OR email LIKE ?
-          OR customer_first_name LIKE ?
-          OR customer_last_name LIKE ?
-          OR CONCAT(
-            COALESCE(customer_first_name, ''),
-            ' ',
-            COALESCE(customer_last_name, '')
-          ) LIKE ?
-          OR shipping_name LIKE ?
-          OR tags LIKE ?
+
+          OR LOWER(email) LIKE LOWER(?)
+
+          OR LOWER(customer_first_name) LIKE LOWER(?)
+
+          OR LOWER(customer_last_name) LIKE LOWER(?)
+
+          OR LOWER(
+              CONCAT(
+                COALESCE(customer_first_name, ''),
+                ' ',
+                COALESCE(customer_last_name, '')
+              )
+            ) LIKE LOWER(?)
+
+          OR LOWER(
+              CONCAT(
+                COALESCE(customer_last_name, ''),
+                ' ',
+                COALESCE(customer_first_name, '')
+              )
+            ) LIKE LOWER(?)
+
+          OR LOWER(shipping_name) LIKE LOWER(?)
+
+          OR LOWER(tags) LIKE LOWER(?)
         )
       `);
         });
@@ -1861,16 +1911,18 @@ router.get('/', authenticateToken, async (req, res) => {
 
         searchValues.forEach(value => {
 
-          const pattern = `%${value}%`;
+          const pattern =
+            `%${value}%`;
 
           queryParams.push(
-            pattern,
-            pattern,
-            pattern,
-            pattern,
-            pattern,
-            pattern,
-            pattern
+            pattern, // order number
+            pattern, // email
+            pattern, // first name
+            pattern, // last name
+            pattern, // first last
+            pattern, // last first
+            pattern, // shipping
+            pattern  // tags
           );
         });
       }
@@ -1919,15 +1971,29 @@ router.get('/', authenticateToken, async (req, res) => {
 
           conditions.push(`
         (
-          customer_first_name LIKE ?
-          OR customer_last_name LIKE ?
-          OR CONCAT(
-            COALESCE(customer_first_name, ''),
-            ' ',
-            COALESCE(customer_last_name, '')
-          ) LIKE ?
-          OR customer_email LIKE ?
-          OR shipping_name LIKE ?
+          LOWER(customer_first_name) LIKE LOWER(?)
+
+          OR LOWER(customer_last_name) LIKE LOWER(?)
+
+          OR LOWER(
+              CONCAT(
+                COALESCE(customer_first_name, ''),
+                ' ',
+                COALESCE(customer_last_name, '')
+              )
+            ) LIKE LOWER(?)
+
+          OR LOWER(
+              CONCAT(
+                COALESCE(customer_last_name, ''),
+                ' ',
+                COALESCE(customer_first_name, '')
+              )
+            ) LIKE LOWER(?)
+
+          OR LOWER(customer_email) LIKE LOWER(?)
+
+          OR LOWER(shipping_name) LIKE LOWER(?)
         )
       `);
         });
@@ -1938,14 +2004,16 @@ router.get('/', authenticateToken, async (req, res) => {
 
         customerValues.forEach(value => {
 
-          const pattern = `%${value}%`;
+          const pattern =
+            `%${value}%`;
 
           queryParams.push(
-            pattern,
-            pattern,
-            pattern,
-            pattern,
-            pattern
+            pattern, // first name
+            pattern, // last name
+            pattern, // first last
+            pattern, // last first
+            pattern, // email
+            pattern  // shipping
           );
         });
       }
