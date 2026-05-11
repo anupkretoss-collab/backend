@@ -140,17 +140,29 @@ export async function fetchShopifyOrdersChunk({
     // ============================================
 
     const linkHeader =
-      response.headers?.get?.('link') || '';
+      response.headers?.Link ||
+      response.headers?.link ||
+      '';
+
+    console.log(
+      'LINK HEADER:',
+      linkHeader
+    );
 
     const nextMatch =
       linkHeader.match(
-        /<[^>]*page_info=([^&>]+)[^>]*>;\s*rel="next"/
+        /page_info=([^&>]+)[^>]*>;\s*rel="next"/
       );
 
     pageInfo =
       nextMatch
         ? nextMatch[1]
         : null;
+
+    console.log(
+      'NEXT PAGE INFO:',
+      pageInfo
+    );
 
     if (!pageInfo) {
       break;
