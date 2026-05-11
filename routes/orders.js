@@ -4,6 +4,7 @@ import {
   fetchShopifyOrders,
   fetchShopifyProducts,
   fetchShopifyCustomers,
+  fetchShopifyOrdersChunk,
 } from '../services/shopify.js';
 import pool from '../services/db.js';
 import XLSX from 'xlsx-js-style';
@@ -1829,6 +1830,73 @@ router.get(
         message:
           'Failed to generate packing slip',
         error: err.message
+      });
+    }
+  }
+);
+
+router.post(
+  '/sync-orders-chunk',
+  authenticateToken,
+  async (req, res) => {
+
+    try {
+
+      const skip =
+        Number(req.body.skip || 386);
+
+      const limit =
+        Number(req.body.limit || 1000);
+
+      // ============================================
+      // FETCH ORDERS
+      // ============================================
+
+      const orders =
+        await fetchShopifyOrdersChunk({
+          skip,
+          limit,
+        });
+
+      console.log(
+        `Fetched ${orders.length} orders`
+      );
+
+      // ============================================
+      // SAVE TO DB
+      // ============================================
+
+      let synced = 0;
+
+      for (const order of orders) {
+
+        await upsertOrder(order);
+
+        synced++;
+
+        console.log(
+          `Synced ${synced}/${orders.length}`
+        );
+      }
+
+      return res.json({
+        success: true,
+        skip,
+        limit,
+        fetched: orders.length,
+        synced,
+      });
+
+    } catch (err) {
+
+      console.error(
+        'Chunk sync error:',
+        err
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: err.message,
       });
     }
   }

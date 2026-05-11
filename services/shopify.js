@@ -64,6 +64,87 @@ async function fetchAllPages(path, query = {}) {
   return results;
 }
 
+// ─── Fetch orders with skip + limit ──────────────────────────────────────────
+export async function fetchShopifyOrdersChunk({
+  skip = 0,
+  limit = 1000,
+} = {}) {
+
+  const client = getClient();
+
+  let allOrders = [];
+
+  let fetched = 0;
+
+  let pageInfo = null;
+
+  const pageLimit = 250;
+
+  while (allOrders.length < (skip + limit)) {
+
+    const query = pageInfo
+      ? {
+        limit: pageLimit,
+        page_info: pageInfo,
+        status: 'any',
+      }
+      : {
+        limit: pageLimit,
+        status: 'any',
+      };
+
+    const response = await client.get({
+      path: 'orders',
+      query,
+    });
+
+    const orders =
+      response.body.orders || [];
+
+    if (!orders.length) {
+      break;
+    }
+
+    allOrders = allOrders.concat(orders);
+
+    fetched += orders.length;
+
+    console.log(
+      `Fetched ${fetched} orders...`
+    );
+
+    // ============================================
+    // NEXT PAGE
+    // ============================================
+
+    const linkHeader =
+      response.headers?.get?.('link') || '';
+
+    const nextMatch =
+      linkHeader.match(
+        /<[^>]*page_info=([^&>]+)[^>]*>;\s*rel="next"/
+      );
+
+    pageInfo =
+      nextMatch
+        ? nextMatch[1]
+        : null;
+
+    if (!pageInfo) {
+      break;
+    }
+  }
+
+  // ============================================
+  // SKIP + TAKE
+  // ============================================
+
+  return allOrders.slice(
+    skip,
+    skip + limit
+  );
+}
+
 // ─── Fetch all orders ─────────────────────────────────────────────────────────
 export async function fetchShopifyOrders() {
   return fetchAllPages('orders', { status: 'any' });
