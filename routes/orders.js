@@ -1843,7 +1843,7 @@ router.post(
     try {
 
       const skip =
-        Number(req.body.skip || 386);
+        Number(req.body.skip || 0);
 
       const limit =
         Number(req.body.limit || 1000);
