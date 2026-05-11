@@ -139,15 +139,14 @@ export async function fetchShopifyOrdersChunk({
     // NEXT PAGE
     // ============================================
 
-    const linkHeader =
+    let linkHeader =
       response.headers?.Link ||
       response.headers?.link ||
       '';
 
-    console.log(
-      'LINK HEADER:',
-      linkHeader
-    );
+    if (Array.isArray(linkHeader)) {
+      linkHeader = linkHeader.join(',');
+    }
 
     const nextMatch =
       linkHeader.match(
