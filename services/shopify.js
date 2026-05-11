@@ -8,6 +8,7 @@ const shopify = shopifyApi({
     // Orders
     'read_orders',
     'write_orders',
+    "read_all_orders",
 
     // Products
     'read_products',
