@@ -65,6 +65,7 @@ async function fetchAllPages(path, query = {}) {
 }
 
 // ─── Fetch orders with skip + limit ──────────────────────────────────────────
+// ─── Fetch orders with skip + limit ──────────────────────────────────────────
 export async function fetchShopifyOrdersChunk({
   skip = 0,
   limit = 1000,
@@ -72,15 +73,15 @@ export async function fetchShopifyOrdersChunk({
 
   const client = getClient();
 
-  let allOrders = [];
+  let collectedOrders = [];
 
-  let fetched = 0;
+  let skipped = 0;
 
   let pageInfo = null;
 
   const pageLimit = 250;
 
-  while (allOrders.length < (skip + limit)) {
+  while (collectedOrders.length < limit) {
 
     const query = pageInfo
       ? {
@@ -101,17 +102,37 @@ export async function fetchShopifyOrdersChunk({
     const orders =
       response.body.orders || [];
 
+    console.log(
+      `Fetched page orders: ${orders.length}`
+    );
+
     if (!orders.length) {
       break;
     }
 
-    allOrders = allOrders.concat(orders);
+    // ============================================
+    // SKIP + COLLECT
+    // ============================================
 
-    fetched += orders.length;
+    for (const order of orders) {
 
-    console.log(
-      `Fetched ${fetched} orders...`
-    );
+      if (skipped < skip) {
+
+        skipped++;
+
+        continue;
+      }
+
+      if (collectedOrders.length < limit) {
+
+        collectedOrders.push(order);
+      }
+    }
+
+    console.log({
+      skipped,
+      collected: collectedOrders.length
+    });
 
     // ============================================
     // NEXT PAGE
@@ -135,14 +156,11 @@ export async function fetchShopifyOrdersChunk({
     }
   }
 
-  // ============================================
-  // SKIP + TAKE
-  // ============================================
-
-  return allOrders.slice(
-    skip,
-    skip + limit
+  console.log(
+    `Final collected orders: ${collectedOrders.length}`
   );
+
+  return collectedOrders;
 }
 
 // ─── Fetch all orders ─────────────────────────────────────────────────────────
