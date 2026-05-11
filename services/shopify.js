@@ -88,7 +88,6 @@ export async function fetchShopifyOrdersChunk({
       ? {
         limit: pageLimit,
         page_info: pageInfo,
-        status: 'any',
       }
       : {
         limit: pageLimit,
