@@ -275,12 +275,23 @@ function rowToOrder(row) {
 // ─── Get metadata for filters (tags, varieties, shipping) ──────────────────
 router.get('/meta', authenticateToken, async (req, res) => {
   try {
-    // 1. Unique Tags
+    // 1. Unique Tags (Orders)
     const [tagRows] = await pool.query('SELECT DISTINCT tags FROM orders WHERE tags IS NOT NULL AND tags != ""');
-    const allTags = new Set();
+    const orderTagsSet = new Set();
     tagRows.forEach(row => {
-      row.tags.split(',').forEach(t => allTags.add(t.trim()));
+      row.tags.split(',').forEach(t => orderTagsSet.add(t.trim()));
     });
+
+    // 2. Unique Tags (Products)
+    const [productTagRows] = await pool.query('SELECT DISTINCT tags FROM products WHERE tags IS NOT NULL AND tags != ""');
+    const productTagsSet = new Set();
+    productTagRows.forEach(row => {
+      if (row.tags) {
+        row.tags.split(',').forEach(t => productTagsSet.add(t.trim()));
+      }
+    });
+
+    const combinedTags = new Set([...orderTagsSet, ...productTagsSet]);
 
     // 2. Unique Varieties (Line Item Titles)
     const [varietyRows] = await pool.query(`
@@ -317,7 +328,9 @@ WHERE jt.title IS NOT NULL
     const [fulfillRows] = await pool.query('SELECT DISTINCT COALESCE(fulfillment_status, "unfulfilled") as status FROM orders');
 
     res.json({
-      tags: Array.from(allTags).sort(),
+      tags: Array.from(combinedTags).sort(),
+      orderTags: Array.from(orderTagsSet).sort(),
+      productTags: Array.from(productTagsSet).sort(),
       varieties: varietyRows.map(r => r.title).sort(),
       shipping: shippingRows.map(r => r.title).sort(),
       payments: paymentRows.map(r => r.financial_status).sort(),
@@ -363,7 +376,9 @@ function buildOrderFilters(query) {
       search
         .split(',')
         .map(v =>
-          v.replace(/#/g, '').trim()
+          decodeURIComponent(v)
+            .replace(/#/g, '')
+            .trim()
         )
         .filter(Boolean);
 
@@ -374,36 +389,58 @@ function buildOrderFilters(query) {
       searchValues.forEach(() => {
 
         conditions.push(`
-        (
-          CAST(order_number AS CHAR) LIKE ?
+      (
+        CAST(order_number AS CHAR) LIKE ?
 
-          OR LOWER(email) LIKE LOWER(?)
+        OR LOWER(COALESCE(email, '')) LIKE LOWER(?)
 
-          OR LOWER(customer_first_name) LIKE LOWER(?)
+        OR LOWER(COALESCE(customer_first_name, '')) LIKE LOWER(?)
 
-          OR LOWER(customer_last_name) LIKE LOWER(?)
+        OR LOWER(COALESCE(customer_last_name, '')) LIKE LOWER(?)
 
-          OR LOWER(
-              CONCAT(
-                COALESCE(customer_first_name, ''),
-                ' ',
-                COALESCE(customer_last_name, '')
-              )
-            ) LIKE LOWER(?)
+        OR LOWER(
+            CONCAT(
+              COALESCE(customer_first_name, ''),
+              ' ',
+              COALESCE(customer_last_name, '')
+            )
+          ) LIKE LOWER(?)
 
-          OR LOWER(
-              CONCAT(
-                COALESCE(customer_last_name, ''),
-                ' ',
-                COALESCE(customer_first_name, '')
-              )
-            ) LIKE LOWER(?)
+        OR LOWER(
+            CONCAT(
+              COALESCE(customer_last_name, ''),
+              ' ',
+              COALESCE(customer_first_name, '')
+            )
+          ) LIKE LOWER(?)
 
-          OR LOWER(shipping_name) LIKE LOWER(?)
+        OR LOWER(COALESCE(shipping_name, '')) LIKE LOWER(?)
 
-          OR LOWER(tags) LIKE LOWER(?)
+        OR LOWER(COALESCE(orders.tags, '')) LIKE LOWER(?)
+
+        OR EXISTS (
+          SELECT 1
+          FROM JSON_TABLE(
+            COALESCE(orders.line_items, '[]'),
+            '$[*]'
+            COLUMNS (
+              product_id VARCHAR(50) PATH '$.product_id',
+              title VARCHAR(255) PATH '$.title'
+            )
+          ) jt
+
+          LEFT JOIN products p
+            ON CAST(p.id AS CHAR) = jt.product_id
+
+          WHERE
+            (
+              LOWER(COALESCE(p.tags, '')) LIKE LOWER(?)
+              OR LOWER(COALESCE(jt.title, '')) LIKE LOWER(?)
+            )
         )
-      `);
+      )
+    `);
+
       });
 
       whereClauses.push(`
@@ -423,8 +460,11 @@ function buildOrderFilters(query) {
           pattern, // first last
           pattern, // last first
           pattern, // shipping
-          pattern  // tags
+          pattern, // order tags
+          pattern, // product tags
+          pattern  // product title
         );
+
       });
     }
   }
@@ -537,7 +577,7 @@ function buildOrderFilters(query) {
     const tagValues =
       tags
         .split(',')
-        .map(v => v.trim())
+        .map(v => decodeURIComponent(v).trim())
         .filter(Boolean);
 
     if (tagValues.length > 0) {
@@ -545,7 +585,31 @@ function buildOrderFilters(query) {
       const conditions = [];
 
       tagValues.forEach(() => {
-        conditions.push(`tags LIKE ?`);
+
+        conditions.push(`
+(
+  LOWER(COALESCE(orders.tags, '')) LIKE LOWER(?)
+
+  OR EXISTS (
+    SELECT 1
+    FROM JSON_TABLE(
+      COALESCE(orders.line_items, '[]'),
+      '$[*]'
+      COLUMNS (
+        product_id VARCHAR(50) PATH '$.product_id'
+      )
+    ) jt
+
+    INNER JOIN products p
+      ON CAST(p.id AS CHAR) = jt.product_id
+
+    WHERE
+      jt.product_id IS NOT NULL
+      AND LOWER(COALESCE(p.tags, '')) LIKE LOWER(?)
+  )
+)
+`);
+
       });
 
       whereClauses.push(`
@@ -553,7 +617,12 @@ function buildOrderFilters(query) {
     `);
 
       tagValues.forEach(tag => {
-        queryParams.push(`%${tag}%`);
+
+        queryParams.push(
+          `%${tag}%`,
+          `%${tag}%`
+        );
+
       });
     }
   }
@@ -1930,7 +1999,9 @@ router.get('/', authenticateToken, async (req, res) => {
         search
           .split(',')
           .map(v =>
-            v.replace(/#/g, '').trim()
+            decodeURIComponent(v)
+              .replace(/#/g, '')
+              .trim()
           )
           .filter(Boolean);
 
@@ -1941,36 +2012,58 @@ router.get('/', authenticateToken, async (req, res) => {
         searchValues.forEach(() => {
 
           conditions.push(`
-        (
-          CAST(order_number AS CHAR) LIKE ?
+      (
+        CAST(order_number AS CHAR) LIKE ?
 
-          OR LOWER(email) LIKE LOWER(?)
+        OR LOWER(COALESCE(email, '')) LIKE LOWER(?)
 
-          OR LOWER(customer_first_name) LIKE LOWER(?)
+        OR LOWER(COALESCE(customer_first_name, '')) LIKE LOWER(?)
 
-          OR LOWER(customer_last_name) LIKE LOWER(?)
+        OR LOWER(COALESCE(customer_last_name, '')) LIKE LOWER(?)
 
-          OR LOWER(
-              CONCAT(
-                COALESCE(customer_first_name, ''),
-                ' ',
-                COALESCE(customer_last_name, '')
-              )
-            ) LIKE LOWER(?)
+        OR LOWER(
+            CONCAT(
+              COALESCE(customer_first_name, ''),
+              ' ',
+              COALESCE(customer_last_name, '')
+            )
+          ) LIKE LOWER(?)
 
-          OR LOWER(
-              CONCAT(
-                COALESCE(customer_last_name, ''),
-                ' ',
-                COALESCE(customer_first_name, '')
-              )
-            ) LIKE LOWER(?)
+        OR LOWER(
+            CONCAT(
+              COALESCE(customer_last_name, ''),
+              ' ',
+              COALESCE(customer_first_name, '')
+            )
+          ) LIKE LOWER(?)
 
-          OR LOWER(shipping_name) LIKE LOWER(?)
+        OR LOWER(COALESCE(shipping_name, '')) LIKE LOWER(?)
 
-          OR LOWER(tags) LIKE LOWER(?)
+        OR LOWER(COALESCE(orders.tags, '')) LIKE LOWER(?)
+
+        OR EXISTS (
+          SELECT 1
+          FROM JSON_TABLE(
+            COALESCE(orders.line_items, '[]'),
+            '$[*]'
+            COLUMNS (
+              product_id VARCHAR(50) PATH '$.product_id',
+              title VARCHAR(255) PATH '$.title'
+            )
+          ) jt
+
+          LEFT JOIN products p
+            ON CAST(p.id AS CHAR) = jt.product_id
+
+          WHERE
+            (
+              LOWER(COALESCE(p.tags, '')) LIKE LOWER(?)
+              OR LOWER(COALESCE(jt.title, '')) LIKE LOWER(?)
+            )
         )
-      `);
+      )
+    `);
+
         });
 
         whereClauses.push(`
@@ -1990,8 +2083,11 @@ router.get('/', authenticateToken, async (req, res) => {
             pattern, // first last
             pattern, // last first
             pattern, // shipping
-            pattern  // tags
+            pattern, // order tags
+            pattern, // product tags
+            pattern  // product title
           );
+
         });
       }
     }
@@ -2096,7 +2192,7 @@ router.get('/', authenticateToken, async (req, res) => {
       const tagValues =
         tags
           .split(',')
-          .map(v => v.trim())
+          .map(v => decodeURIComponent(v).trim())
           .filter(Boolean);
 
       if (tagValues.length > 0) {
@@ -2106,8 +2202,29 @@ router.get('/', authenticateToken, async (req, res) => {
         tagValues.forEach(() => {
 
           conditions.push(`
-        tags LIKE ?
-      `);
+(
+  LOWER(COALESCE(orders.tags, '')) LIKE LOWER(?)
+
+  OR EXISTS (
+    SELECT 1
+    FROM JSON_TABLE(
+      COALESCE(orders.line_items, '[]'),
+      '$[*]'
+      COLUMNS (
+        product_id VARCHAR(50) PATH '$.product_id'
+      )
+    ) jt
+
+    INNER JOIN products p
+      ON CAST(p.id AS CHAR) = jt.product_id
+
+    WHERE
+      jt.product_id IS NOT NULL
+      AND LOWER(COALESCE(p.tags, '')) LIKE LOWER(?)
+  )
+)
+`);
+
         });
 
         whereClauses.push(`
@@ -2117,8 +2234,10 @@ router.get('/', authenticateToken, async (req, res) => {
         tagValues.forEach(tag => {
 
           queryParams.push(
+            `%${tag}%`,
             `%${tag}%`
           );
+
         });
       }
     }
@@ -2307,7 +2426,7 @@ router.get('/', authenticateToken, async (req, res) => {
 
     // Fetch paginated data
     const [rows] = await pool.query(
-      `SELECT * FROM orders ${whereSql} ORDER BY ${orderBy} ${orderDir} LIMIT ? OFFSET ?`,
+      `SELECT DISTINCT orders.* FROM orders ${whereSql} ORDER BY ${orderBy} ${orderDir} LIMIT ? OFFSET ?`,
       [...queryParams, limit, offset]
     );
 
