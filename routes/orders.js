@@ -416,7 +416,9 @@ function buildOrderFilters(query) {
 
         OR LOWER(COALESCE(shipping_name, '')) LIKE LOWER(?)
 
-        OR LOWER(COALESCE(orders.tags, '')) LIKE LOWER(?)
+        OR LOWER(
+  COALESCE(orders.tags, '') COLLATE utf8mb4_unicode_ci
+) LIKE LOWER(?)
 
         OR EXISTS (
           SELECT 1
@@ -430,11 +432,14 @@ function buildOrderFilters(query) {
           ) jt
 
           LEFT JOIN products p
-            ON CAST(p.id AS CHAR) = jt.product_id
+            ON CAST(p.id AS CHAR) COLLATE utf8mb4_unicode_ci =
+   jt.product_id COLLATE utf8mb4_unicode_ci
 
           WHERE
             (
-              LOWER(COALESCE(p.tags, '')) LIKE LOWER(?)
+              LOWER(
+  COALESCE(p.tags, '') COLLATE utf8mb4_unicode_ci
+) LIKE LOWER(?)
               OR LOWER(COALESCE(jt.title, '')) LIKE LOWER(?)
             )
         )
@@ -588,7 +593,9 @@ function buildOrderFilters(query) {
 
         conditions.push(`
 (
-  LOWER(COALESCE(orders.tags, '')) LIKE LOWER(?)
+  LOWER(COALESCE(orders.tags, '')) LIKE LOWER(?)LOWER(
+  COALESCE(orders.tags, '') COLLATE utf8mb4_unicode_ci
+) LIKE LOWER(?)
 
   OR EXISTS (
     SELECT 1
@@ -601,11 +608,14 @@ function buildOrderFilters(query) {
     ) jt
 
     INNER JOIN products p
-      ON CAST(p.id AS CHAR) = jt.product_id
+      ON CAST(p.id AS CHAR) COLLATE utf8mb4_unicode_ci =
+   jt.product_id COLLATE utf8mb4_unicode_ci
 
     WHERE
       jt.product_id IS NOT NULL
-      AND LOWER(COALESCE(p.tags, '')) LIKE LOWER(?)
+      AND LOWER(
+  COALESCE(p.tags, '') COLLATE utf8mb4_unicode_ci
+) LIKE LOWER(?)
   )
 )
 `);
@@ -2039,7 +2049,9 @@ router.get('/', authenticateToken, async (req, res) => {
 
         OR LOWER(COALESCE(shipping_name, '')) LIKE LOWER(?)
 
-        OR LOWER(COALESCE(orders.tags, '')) LIKE LOWER(?)
+        OR LOWER(
+  COALESCE(orders.tags, '') COLLATE utf8mb4_unicode_ci
+) LIKE LOWER(?)
 
         OR EXISTS (
           SELECT 1
@@ -2053,11 +2065,14 @@ router.get('/', authenticateToken, async (req, res) => {
           ) jt
 
           LEFT JOIN products p
-            ON CAST(p.id AS CHAR) = jt.product_id
+            ON CAST(p.id AS CHAR) COLLATE utf8mb4_unicode_ci =
+   jt.product_id COLLATE utf8mb4_unicode_ci
 
           WHERE
             (
-              LOWER(COALESCE(p.tags, '')) LIKE LOWER(?)
+              LOWER(
+  COALESCE(p.tags, '') COLLATE utf8mb4_unicode_ci
+) LIKE LOWER(?)
               OR LOWER(COALESCE(jt.title, '')) LIKE LOWER(?)
             )
         )
@@ -2203,7 +2218,9 @@ router.get('/', authenticateToken, async (req, res) => {
 
           conditions.push(`
 (
-  LOWER(COALESCE(orders.tags, '')) LIKE LOWER(?)
+  LOWER(
+  COALESCE(orders.tags, '') COLLATE utf8mb4_unicode_ci
+) LIKE LOWER(?)
 
   OR EXISTS (
     SELECT 1
@@ -2216,11 +2233,14 @@ router.get('/', authenticateToken, async (req, res) => {
     ) jt
 
     INNER JOIN products p
-      ON CAST(p.id AS CHAR) = jt.product_id
+      ON CAST(p.id AS CHAR) COLLATE utf8mb4_unicode_ci =
+   jt.product_id COLLATE utf8mb4_unicode_ci
 
     WHERE
       jt.product_id IS NOT NULL
-      AND LOWER(COALESCE(p.tags, '')) LIKE LOWER(?)
+      AND LOWER(
+  COALESCE(p.tags, '') COLLATE utf8mb4_unicode_ci
+) LIKE LOWER(?)
   )
 )
 `);
