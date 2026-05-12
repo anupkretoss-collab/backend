@@ -370,6 +370,110 @@ function buildOrderFilters(query) {
   // SEARCH
   // ============================================
 
+  //   if (search) {
+
+  //     const searchValues =
+  //       search
+  //         .split(',')
+  //         .map(v =>
+  //           decodeURIComponent(v)
+  //             .replace(/#/g, '')
+  //             .trim()
+  //         )
+  //         .filter(Boolean);
+
+  //     if (searchValues.length > 0) {
+
+  //       const conditions = [];
+
+  //       searchValues.forEach(() => {
+
+  //         conditions.push(`
+  //       (
+  //         CAST(order_number AS CHAR) LIKE ?
+
+  //         OR LOWER(COALESCE(email, '')) LIKE LOWER(?)
+
+  //         OR LOWER(COALESCE(customer_first_name, '')) LIKE LOWER(?)
+
+  //         OR LOWER(COALESCE(customer_last_name, '')) LIKE LOWER(?)
+
+  //         OR LOWER(
+  //             CONCAT(
+  //               COALESCE(customer_first_name, ''),
+  //               ' ',
+  //               COALESCE(customer_last_name, '')
+  //             )
+  //           ) LIKE LOWER(?)
+
+  //         OR LOWER(
+  //             CONCAT(
+  //               COALESCE(customer_last_name, ''),
+  //               ' ',
+  //               COALESCE(customer_first_name, '')
+  //             )
+  //           ) LIKE LOWER(?)
+
+  //         OR LOWER(COALESCE(shipping_name, '')) LIKE LOWER(?)
+
+  //         OR LOWER(
+  //   COALESCE(orders.tags, '') COLLATE utf8mb4_unicode_ci
+  // ) LIKE LOWER(?)
+
+  //         OR EXISTS (
+  //           SELECT 1
+  //           FROM JSON_TABLE(
+  //             COALESCE(orders.line_items, '[]'),
+  //             '$[*]'
+  //             COLUMNS (
+  //               product_id VARCHAR(50) PATH '$.product_id',
+  //               title VARCHAR(255) PATH '$.title'
+  //             )
+  //           ) jt
+
+  //           LEFT JOIN products p
+  //             ON CAST(p.id AS CHAR) COLLATE utf8mb4_unicode_ci =
+  //    jt.product_id COLLATE utf8mb4_unicode_ci
+
+  //           WHERE
+  //             (
+  //               LOWER(
+  //   COALESCE(p.tags, '') COLLATE utf8mb4_unicode_ci
+  // ) LIKE LOWER(?)
+  //               OR LOWER(COALESCE(jt.title, '')) LIKE LOWER(?)
+  //             )
+  //         )
+  //       )
+  //     `);
+
+  //       });
+
+  //       whereClauses.push(`
+  //       (${conditions.join(' OR ')})
+  //     `);
+
+  //       searchValues.forEach(value => {
+
+  //         const pattern =
+  //           `%${value}%`;
+
+  //         queryParams.push(
+  //           pattern, // order number
+  //           pattern, // email
+  //           pattern, // first name
+  //           pattern, // last name
+  //           pattern, // first last
+  //           pattern, // last first
+  //           pattern, // shipping
+  //           pattern, // order tags
+  //           pattern, // product tags
+  //           pattern  // product title
+  //         );
+
+  //       });
+  //     }
+  //   }
+
   if (search) {
 
     const searchValues =
@@ -392,57 +496,33 @@ function buildOrderFilters(query) {
       (
         CAST(order_number AS CHAR) LIKE ?
 
-        OR LOWER(COALESCE(email, '')) LIKE LOWER(?)
-
-        OR LOWER(COALESCE(customer_first_name, '')) LIKE LOWER(?)
-
-        OR LOWER(COALESCE(customer_last_name, '')) LIKE LOWER(?)
+        OR LOWER(
+          COALESCE(email, '') COLLATE utf8mb4_unicode_ci
+        ) LIKE LOWER(?)
 
         OR LOWER(
-            CONCAT(
-              COALESCE(customer_first_name, ''),
-              ' ',
-              COALESCE(customer_last_name, '')
-            )
-          ) LIKE LOWER(?)
+          COALESCE(customer_first_name, '') COLLATE utf8mb4_unicode_ci
+        ) LIKE LOWER(?)
 
         OR LOWER(
-            CONCAT(
-              COALESCE(customer_last_name, ''),
-              ' ',
-              COALESCE(customer_first_name, '')
-            )
-          ) LIKE LOWER(?)
-
-        OR LOWER(COALESCE(shipping_name, '')) LIKE LOWER(?)
+          COALESCE(customer_last_name, '') COLLATE utf8mb4_unicode_ci
+        ) LIKE LOWER(?)
 
         OR LOWER(
-  COALESCE(orders.tags, '') COLLATE utf8mb4_unicode_ci
-) LIKE LOWER(?)
+          CONCAT(
+            COALESCE(customer_first_name, ''),
+            ' ',
+            COALESCE(customer_last_name, '')
+          ) COLLATE utf8mb4_unicode_ci
+        ) LIKE LOWER(?)
 
-        OR EXISTS (
-          SELECT 1
-          FROM JSON_TABLE(
-            COALESCE(orders.line_items, '[]'),
-            '$[*]'
-            COLUMNS (
-              product_id VARCHAR(50) PATH '$.product_id',
-              title VARCHAR(255) PATH '$.title'
-            )
-          ) jt
-
-          LEFT JOIN products p
-            ON CAST(p.id AS CHAR) COLLATE utf8mb4_unicode_ci =
-   jt.product_id COLLATE utf8mb4_unicode_ci
-
-          WHERE
-            (
-              LOWER(
-  COALESCE(p.tags, '') COLLATE utf8mb4_unicode_ci
-) LIKE LOWER(?)
-              OR LOWER(COALESCE(jt.title, '')) LIKE LOWER(?)
-            )
-        )
+        OR LOWER(
+          CONCAT(
+            COALESCE(customer_last_name, ''),
+            ' ',
+            COALESCE(customer_first_name, '')
+          ) COLLATE utf8mb4_unicode_ci
+        ) LIKE LOWER(?)
       )
     `);
 
@@ -454,8 +534,7 @@ function buildOrderFilters(query) {
 
       searchValues.forEach(value => {
 
-        const pattern =
-          `%${value}%`;
+        const pattern = `%${value}%`;
 
         queryParams.push(
           pattern, // order number
@@ -463,17 +542,13 @@ function buildOrderFilters(query) {
           pattern, // first name
           pattern, // last name
           pattern, // first last
-          pattern, // last first
-          pattern, // shipping
-          pattern, // order tags
-          pattern, // product tags
-          pattern  // product title
+          pattern  // last first
         );
 
       });
     }
   }
-
+  
   // ============================================
   // ORDER NUMBER
   // ============================================
@@ -2003,6 +2078,110 @@ router.get('/', authenticateToken, async (req, res) => {
     let whereClauses = [];
     let queryParams = [];
 
+    //     if (search) {
+
+    //       const searchValues =
+    //         search
+    //           .split(',')
+    //           .map(v =>
+    //             decodeURIComponent(v)
+    //               .replace(/#/g, '')
+    //               .trim()
+    //           )
+    //           .filter(Boolean);
+
+    //       if (searchValues.length > 0) {
+
+    //         const conditions = [];
+
+    //         searchValues.forEach(() => {
+
+    //           conditions.push(`
+    //       (
+    //         CAST(order_number AS CHAR) LIKE ?
+
+    //         OR LOWER(COALESCE(email, '')) LIKE LOWER(?)
+
+    //         OR LOWER(COALESCE(customer_first_name, '')) LIKE LOWER(?)
+
+    //         OR LOWER(COALESCE(customer_last_name, '')) LIKE LOWER(?)
+
+    //         OR LOWER(
+    //             CONCAT(
+    //               COALESCE(customer_first_name, ''),
+    //               ' ',
+    //               COALESCE(customer_last_name, '')
+    //             )
+    //           ) LIKE LOWER(?)
+
+    //         OR LOWER(
+    //             CONCAT(
+    //               COALESCE(customer_last_name, ''),
+    //               ' ',
+    //               COALESCE(customer_first_name, '')
+    //             )
+    //           ) LIKE LOWER(?)
+
+    //         OR LOWER(COALESCE(shipping_name, '')) LIKE LOWER(?)
+
+    //         OR LOWER(
+    //   COALESCE(orders.tags, '') COLLATE utf8mb4_unicode_ci
+    // ) LIKE LOWER(?)
+
+    //         OR EXISTS (
+    //           SELECT 1
+    //           FROM JSON_TABLE(
+    //             COALESCE(orders.line_items, '[]'),
+    //             '$[*]'
+    //             COLUMNS (
+    //               product_id VARCHAR(50) PATH '$.product_id',
+    //               title VARCHAR(255) PATH '$.title'
+    //             )
+    //           ) jt
+
+    //           LEFT JOIN products p
+    //             ON CAST(p.id AS CHAR) COLLATE utf8mb4_unicode_ci =
+    //    jt.product_id COLLATE utf8mb4_unicode_ci
+
+    //           WHERE
+    //             (
+    //               LOWER(
+    //   COALESCE(p.tags, '') COLLATE utf8mb4_unicode_ci
+    // ) LIKE LOWER(?)
+    //               OR LOWER(COALESCE(jt.title, '')) LIKE LOWER(?)
+    //             )
+    //         )
+    //       )
+    //     `);
+
+    //         });
+
+    //         whereClauses.push(`
+    //       (${conditions.join(' OR ')})
+    //     `);
+
+    //         searchValues.forEach(value => {
+
+    //           const pattern =
+    //             `%${value}%`;
+
+    //           queryParams.push(
+    //             pattern, // order number
+    //             pattern, // email
+    //             pattern, // first name
+    //             pattern, // last name
+    //             pattern, // first last
+    //             pattern, // last first
+    //             pattern, // shipping
+    //             pattern, // order tags
+    //             pattern, // product tags
+    //             pattern  // product title
+    //           );
+
+    //         });
+    //       }
+    //     }
+
     if (search) {
 
       const searchValues =
@@ -2025,57 +2204,33 @@ router.get('/', authenticateToken, async (req, res) => {
       (
         CAST(order_number AS CHAR) LIKE ?
 
-        OR LOWER(COALESCE(email, '')) LIKE LOWER(?)
-
-        OR LOWER(COALESCE(customer_first_name, '')) LIKE LOWER(?)
-
-        OR LOWER(COALESCE(customer_last_name, '')) LIKE LOWER(?)
+        OR LOWER(
+          COALESCE(email, '') COLLATE utf8mb4_unicode_ci
+        ) LIKE LOWER(?)
 
         OR LOWER(
-            CONCAT(
-              COALESCE(customer_first_name, ''),
-              ' ',
-              COALESCE(customer_last_name, '')
-            )
-          ) LIKE LOWER(?)
+          COALESCE(customer_first_name, '') COLLATE utf8mb4_unicode_ci
+        ) LIKE LOWER(?)
 
         OR LOWER(
-            CONCAT(
-              COALESCE(customer_last_name, ''),
-              ' ',
-              COALESCE(customer_first_name, '')
-            )
-          ) LIKE LOWER(?)
-
-        OR LOWER(COALESCE(shipping_name, '')) LIKE LOWER(?)
+          COALESCE(customer_last_name, '') COLLATE utf8mb4_unicode_ci
+        ) LIKE LOWER(?)
 
         OR LOWER(
-  COALESCE(orders.tags, '') COLLATE utf8mb4_unicode_ci
-) LIKE LOWER(?)
+          CONCAT(
+            COALESCE(customer_first_name, ''),
+            ' ',
+            COALESCE(customer_last_name, '')
+          ) COLLATE utf8mb4_unicode_ci
+        ) LIKE LOWER(?)
 
-        OR EXISTS (
-          SELECT 1
-          FROM JSON_TABLE(
-            COALESCE(orders.line_items, '[]'),
-            '$[*]'
-            COLUMNS (
-              product_id VARCHAR(50) PATH '$.product_id',
-              title VARCHAR(255) PATH '$.title'
-            )
-          ) jt
-
-          LEFT JOIN products p
-            ON CAST(p.id AS CHAR) COLLATE utf8mb4_unicode_ci =
-   jt.product_id COLLATE utf8mb4_unicode_ci
-
-          WHERE
-            (
-              LOWER(
-  COALESCE(p.tags, '') COLLATE utf8mb4_unicode_ci
-) LIKE LOWER(?)
-              OR LOWER(COALESCE(jt.title, '')) LIKE LOWER(?)
-            )
-        )
+        OR LOWER(
+          CONCAT(
+            COALESCE(customer_last_name, ''),
+            ' ',
+            COALESCE(customer_first_name, '')
+          ) COLLATE utf8mb4_unicode_ci
+        ) LIKE LOWER(?)
       )
     `);
 
@@ -2087,8 +2242,7 @@ router.get('/', authenticateToken, async (req, res) => {
 
         searchValues.forEach(value => {
 
-          const pattern =
-            `%${value}%`;
+          const pattern = `%${value}%`;
 
           queryParams.push(
             pattern, // order number
@@ -2096,11 +2250,7 @@ router.get('/', authenticateToken, async (req, res) => {
             pattern, // first name
             pattern, // last name
             pattern, // first last
-            pattern, // last first
-            pattern, // shipping
-            pattern, // order tags
-            pattern, // product tags
-            pattern  // product title
+            pattern  // last first
           );
 
         });
