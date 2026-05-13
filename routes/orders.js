@@ -1428,6 +1428,16 @@ router.get(
       );
 
       // ============================================
+      // HORTICULTURAL PRODUCTS FILTER
+      // ============================================
+
+      const [plantProducts] = await pool.query(
+        "SELECT id FROM products WHERE tags LIKE ?",
+        ['%plants-seedlings%']
+      );
+      const plantIdSet = new Set(plantProducts.map(p => String(p.id)));
+
+      // ============================================
       // PRODUCT SUMMARY
       // ============================================
 
@@ -1441,6 +1451,11 @@ router.get(
             : row.line_items || [];
 
         for (const item of lineItems) {
+
+          // Only include horticultural products (tagged with 'plants-seedlings')
+          if (!plantIdSet.has(String(item.product_id))) {
+            continue;
+          }
 
           const title = (item.title || '')
             .replace(/\s+/g, ' ')
@@ -1694,6 +1709,16 @@ router.get(
       );
 
       // ============================================
+      // HORTICULTURAL PRODUCTS FILTER
+      // ============================================
+
+      const [plantProducts] = await pool.query(
+        "SELECT id FROM products WHERE tags LIKE ?",
+        ['%plants-seedlings%']
+      );
+      const plantIdSet = new Set(plantProducts.map(p => String(p.id)));
+
+      // ============================================
       // EXCEL DATA
       // ============================================
 
@@ -1713,6 +1738,13 @@ router.get(
             ? JSON.parse(row.line_items)
             : row.line_items || [];
 
+        // Filter for horticultural products only
+        const plantLineItems = lineItems.filter(item => 
+          plantIdSet.has(String(item.product_id))
+        );
+
+        if (plantLineItems.length === 0) continue;
+
         const shippingLines =
           typeof row.shipping_lines === 'string'
             ? JSON.parse(row.shipping_lines)
@@ -1721,7 +1753,7 @@ router.get(
         const shippingTitle =
           shippingLines?.[0]?.title || '';
 
-        lineItems.forEach((item, index) => {
+        plantLineItems.forEach((item, index) => {
 
           data.push([
 
@@ -1731,9 +1763,7 @@ router.get(
 
             item.title || '',
 
-            index === 0
-              ? shippingTitle
-              : '',
+            shippingTitle, // Not merged, repeat for every row
 
             Number(item.quantity || 1)
           ]);
@@ -1788,16 +1818,7 @@ router.get(
               }
             });
 
-            merges.push({
-              s: {
-                r: startRow,
-                c: 2
-              },
-              e: {
-                r: endRow,
-                c: 2
-              }
-            });
+            // Removed shipping title merge (column 2) as requested
           }
 
           startRow = i;
@@ -1820,16 +1841,7 @@ router.get(
           }
         });
 
-        merges.push({
-          s: {
-            r: startRow,
-            c: 2
-          },
-          e: {
-            r: data.length - 1,
-            c: 2
-          }
-        });
+        // Removed shipping title merge (column 2) as requested
       }
 
       ws['!merges'] = merges;
@@ -1906,6 +1918,22 @@ router.get(
               sz: 11
             }
           };
+
+          // Conditional Formatting for Net Quantity (Column 3)
+          if (R > 0 && C === 3) {
+            const val = Number(ws[cellRef].v);
+            if (val > 1) {
+              // Green background
+              ws[cellRef].s.fill = {
+                fgColor: { rgb: 'C6EFCE' }
+              };
+            } else if (val <= 0) {
+              // Red background
+              ws[cellRef].s.fill = {
+                fgColor: { rgb: 'FFC7CE' }
+              };
+            }
+          }
 
           // HEADER
           if (R === 0) {
