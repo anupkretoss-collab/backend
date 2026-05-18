@@ -342,7 +342,7 @@ WHERE jt.title IS NOT NULL
   }
 });
 
-function buildOrderFilters(query) {
+export function buildOrderFilters(query) {
 
   const {
     search,
@@ -653,61 +653,47 @@ function buildOrderFilters(query) {
   // ============================================
 
   if (tags) {
-
-    const tagValues =
-      tags
-        .split(',')
-        .map(v => decodeURIComponent(v).trim())
-        .filter(Boolean);
+    const tagValues = tags
+      .split(',')
+      .map(v => decodeURIComponent(v).trim())
+      .filter(Boolean);
 
     if (tagValues.length > 0) {
-
       const conditions = [];
 
       tagValues.forEach(() => {
-
         conditions.push(`
-(
-  LOWER(COALESCE(orders.tags, '')) LIKE LOWER(?)LOWER(
-  COALESCE(orders.tags, '') COLLATE utf8mb4_unicode_ci
-) LIKE LOWER(?)
-
-  OR EXISTS (
-    SELECT 1
-    FROM JSON_TABLE(
-      COALESCE(orders.line_items, '[]'),
-      '$[*]'
-      COLUMNS (
-        product_id VARCHAR(50) PATH '$.product_id'
-      )
-    ) jt
-
-    INNER JOIN products p
-      ON CAST(p.id AS CHAR) COLLATE utf8mb4_unicode_ci =
-   jt.product_id COLLATE utf8mb4_unicode_ci
-
-    WHERE
-      jt.product_id IS NOT NULL
-      AND LOWER(
-  COALESCE(p.tags, '') COLLATE utf8mb4_unicode_ci
-) LIKE LOWER(?)
-  )
-)
-`);
-
+          (
+            LOWER(COALESCE(orders.tags, '') COLLATE utf8mb4_unicode_ci) LIKE LOWER(?)
+            OR EXISTS (
+              SELECT 1
+              FROM JSON_TABLE(
+                COALESCE(orders.line_items, '[]'),
+                '$[*]'
+                COLUMNS (
+                  product_id VARCHAR(50) PATH '$.product_id'
+                )
+              ) jt
+              INNER JOIN products p
+                ON CAST(p.id AS CHAR) COLLATE utf8mb4_unicode_ci = jt.product_id COLLATE utf8mb4_unicode_ci
+              WHERE
+                jt.product_id IS NOT NULL
+                AND LOWER(COALESCE(p.tags, '') COLLATE utf8mb4_unicode_ci) LIKE LOWER(?)
+            )
+          )
+        `);
       });
 
+      // Require all specified tags (AND logic)
       whereClauses.push(`
-      (${conditions.join(' OR ')})
-    `);
+        (${conditions.join(' AND ')})
+      `);
 
       tagValues.forEach(tag => {
-
         queryParams.push(
           `%${tag}%`,
           `%${tag}%`
         );
-
       });
     }
   }
@@ -2090,477 +2076,7 @@ router.get('/', authenticateToken, async (req, res) => {
     const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
 
-    const {
-      search,
-      tags,
-      varieties,
-      shipping,
-      fulfillment_status,
-      financial_status,
-      order_number,
-      customer,
-      amount_min,
-      amount_max,
-    } = req.query;
-
-    let whereClauses = [];
-    let queryParams = [];
-
-    //     if (search) {
-
-    //       const searchValues =
-    //         search
-    //           .split(',')
-    //           .map(v =>
-    //             decodeURIComponent(v)
-    //               .replace(/#/g, '')
-    //               .trim()
-    //           )
-    //           .filter(Boolean);
-
-    //       if (searchValues.length > 0) {
-
-    //         const conditions = [];
-
-    //         searchValues.forEach(() => {
-
-    //           conditions.push(`
-    //       (
-    //         CAST(order_number AS CHAR) LIKE ?
-
-    //         OR LOWER(COALESCE(email, '')) LIKE LOWER(?)
-
-    //         OR LOWER(COALESCE(customer_first_name, '')) LIKE LOWER(?)
-
-    //         OR LOWER(COALESCE(customer_last_name, '')) LIKE LOWER(?)
-
-    //         OR LOWER(
-    //             CONCAT(
-    //               COALESCE(customer_first_name, ''),
-    //               ' ',
-    //               COALESCE(customer_last_name, '')
-    //             )
-    //           ) LIKE LOWER(?)
-
-    //         OR LOWER(
-    //             CONCAT(
-    //               COALESCE(customer_last_name, ''),
-    //               ' ',
-    //               COALESCE(customer_first_name, '')
-    //             )
-    //           ) LIKE LOWER(?)
-
-    //         OR LOWER(COALESCE(shipping_name, '')) LIKE LOWER(?)
-
-    //         OR LOWER(
-    //   COALESCE(orders.tags, '') COLLATE utf8mb4_unicode_ci
-    // ) LIKE LOWER(?)
-
-    //         OR EXISTS (
-    //           SELECT 1
-    //           FROM JSON_TABLE(
-    //             COALESCE(orders.line_items, '[]'),
-    //             '$[*]'
-    //             COLUMNS (
-    //               product_id VARCHAR(50) PATH '$.product_id',
-    //               title VARCHAR(255) PATH '$.title'
-    //             )
-    //           ) jt
-
-    //           LEFT JOIN products p
-    //             ON CAST(p.id AS CHAR) COLLATE utf8mb4_unicode_ci =
-    //    jt.product_id COLLATE utf8mb4_unicode_ci
-
-    //           WHERE
-    //             (
-    //               LOWER(
-    //   COALESCE(p.tags, '') COLLATE utf8mb4_unicode_ci
-    // ) LIKE LOWER(?)
-    //               OR LOWER(COALESCE(jt.title, '')) LIKE LOWER(?)
-    //             )
-    //         )
-    //       )
-    //     `);
-
-    //         });
-
-    //         whereClauses.push(`
-    //       (${conditions.join(' OR ')})
-    //     `);
-
-    //         searchValues.forEach(value => {
-
-    //           const pattern =
-    //             `%${value}%`;
-
-    //           queryParams.push(
-    //             pattern, // order number
-    //             pattern, // email
-    //             pattern, // first name
-    //             pattern, // last name
-    //             pattern, // first last
-    //             pattern, // last first
-    //             pattern, // shipping
-    //             pattern, // order tags
-    //             pattern, // product tags
-    //             pattern  // product title
-    //           );
-
-    //         });
-    //       }
-    //     }
-
-    if (search) {
-
-      const searchValues =
-        search
-          .split(',')
-          .map(v =>
-            decodeURIComponent(v)
-              .replace(/#/g, '')
-              .trim()
-          )
-          .filter(Boolean);
-
-      if (searchValues.length > 0) {
-
-        const conditions = [];
-
-        searchValues.forEach(() => {
-
-          conditions.push(`
-      (
-        CAST(order_number AS CHAR) LIKE ?
-
-        OR LOWER(
-          COALESCE(email, '') COLLATE utf8mb4_unicode_ci
-        ) LIKE LOWER(?)
-
-        OR LOWER(
-          COALESCE(customer_first_name, '') COLLATE utf8mb4_unicode_ci
-        ) LIKE LOWER(?)
-
-        OR LOWER(
-          COALESCE(customer_last_name, '') COLLATE utf8mb4_unicode_ci
-        ) LIKE LOWER(?)
-
-        OR LOWER(
-          CONCAT(
-            COALESCE(customer_first_name, ''),
-            ' ',
-            COALESCE(customer_last_name, '')
-          ) COLLATE utf8mb4_unicode_ci
-        ) LIKE LOWER(?)
-
-        OR LOWER(
-          CONCAT(
-            COALESCE(customer_last_name, ''),
-            ' ',
-            COALESCE(customer_first_name, '')
-          ) COLLATE utf8mb4_unicode_ci
-        ) LIKE LOWER(?)
-      )
-    `);
-
-        });
-
-        whereClauses.push(`
-      (${conditions.join(' OR ')})
-    `);
-
-        searchValues.forEach(value => {
-
-          const pattern = `%${value}%`;
-
-          queryParams.push(
-            pattern, // order number
-            pattern, // email
-            pattern, // first name
-            pattern, // last name
-            pattern, // first last
-            pattern  // last first
-          );
-
-        });
-      }
-    }
-
-    if (order_number) {
-
-      const orderNumbers =
-        order_number
-          .split(',')
-          .map(v =>
-            v.replace(/#/g, '').trim()
-          )
-          .filter(Boolean);
-
-      if (orderNumbers.length > 0) {
-
-        const conditions =
-          orderNumbers.map(() =>
-            'CAST(order_number AS CHAR) LIKE ?'
-          );
-
-        whereClauses.push(`
-      (${conditions.join(' OR ')})
-    `);
-
-        orderNumbers.forEach(num => {
-          queryParams.push(`%${num}%`);
-        });
-      }
-    }
-
-    if (customer) {
-
-      const customerValues =
-        customer
-          .split(',')
-          .map(v => v.trim())
-          .filter(Boolean);
-
-      if (customerValues.length > 0) {
-
-        const conditions = [];
-
-        customerValues.forEach(() => {
-
-          conditions.push(`
-        (
-          LOWER(customer_first_name) LIKE LOWER(?)
-
-          OR LOWER(customer_last_name) LIKE LOWER(?)
-
-          OR LOWER(
-              CONCAT(
-                COALESCE(customer_first_name, ''),
-                ' ',
-                COALESCE(customer_last_name, '')
-              )
-            ) LIKE LOWER(?)
-
-          OR LOWER(
-              CONCAT(
-                COALESCE(customer_last_name, ''),
-                ' ',
-                COALESCE(customer_first_name, '')
-              )
-            ) LIKE LOWER(?)
-
-          OR LOWER(customer_email) LIKE LOWER(?)
-
-          OR LOWER(shipping_name) LIKE LOWER(?)
-        )
-      `);
-        });
-
-        whereClauses.push(`
-      (${conditions.join(' OR ')})
-    `);
-
-        customerValues.forEach(value => {
-
-          const pattern =
-            `%${value}%`;
-
-          queryParams.push(
-            pattern, // first name
-            pattern, // last name
-            pattern, // first last
-            pattern, // last first
-            pattern, // email
-            pattern  // shipping
-          );
-        });
-      }
-    }
-
-    // ============================================
-    // TAGS
-    // ============================================
-
-    if (tags) {
-
-      const tagValues =
-        tags
-          .split(',')
-          .map(v => decodeURIComponent(v).trim())
-          .filter(Boolean);
-
-      if (tagValues.length > 0) {
-
-        const conditions = [];
-
-        tagValues.forEach(() => {
-
-          conditions.push(`
-(
-  LOWER(
-  COALESCE(orders.tags, '') COLLATE utf8mb4_unicode_ci
-) LIKE LOWER(?)
-
-  OR EXISTS (
-    SELECT 1
-    FROM JSON_TABLE(
-      COALESCE(orders.line_items, '[]'),
-      '$[*]'
-      COLUMNS (
-        product_id VARCHAR(50) PATH '$.product_id'
-      )
-    ) jt
-
-    INNER JOIN products p
-      ON CAST(p.id AS CHAR) COLLATE utf8mb4_unicode_ci =
-   jt.product_id COLLATE utf8mb4_unicode_ci
-
-    WHERE
-      jt.product_id IS NOT NULL
-      AND LOWER(
-  COALESCE(p.tags, '') COLLATE utf8mb4_unicode_ci
-) LIKE LOWER(?)
-  )
-)
-`);
-
-        });
-
-        whereClauses.push(`
-      (${conditions.join(' OR ')})
-    `);
-
-        tagValues.forEach(tag => {
-
-          queryParams.push(
-            `%${tag}%`,
-            `%${tag}%`
-          );
-
-        });
-      }
-    }
-
-    // ============================================
-    // VARIETIES
-    // ============================================
-
-    if (varieties) {
-
-      const varietyValues =
-        decodeURIComponent(varieties)
-          .split(',')
-          .map(v =>
-            v
-              .trim()
-              .toLowerCase()
-              .replace(/\s+/g, ' ')
-          )
-          .filter(Boolean);
-
-      if (varietyValues.length > 0) {
-
-        const conditions = [];
-
-        varietyValues.forEach(() => {
-
-          conditions.push(`
-        LOWER(line_items) LIKE ?
-      `);
-        });
-
-        whereClauses.push(`
-      (${conditions.join(' OR ')})
-    `);
-
-        varietyValues.forEach(value => {
-
-          queryParams.push(
-            `%${value}%`
-          );
-        });
-      }
-    }
-
-    // ============================================
-    // SHIPPING METHODS
-    // ============================================
-
-    if (shipping) {
-
-      const shippingValues =
-        decodeURIComponent(shipping)
-          .split(',')
-          .map(v =>
-            v
-              .trim()
-              .toLowerCase()
-              .replace(/\s+/g, ' ')
-          )
-          .filter(Boolean);
-
-      if (shippingValues.length > 0) {
-
-        const conditions = [];
-
-        shippingValues.forEach(() => {
-
-          conditions.push(`
-        LOWER(
-          COALESCE(shipping_lines, '')
-        ) LIKE ?
-      `);
-
-        });
-
-        whereClauses.push(`
-      (${conditions.join(' OR ')})
-    `);
-
-        shippingValues.forEach(value => {
-
-          queryParams.push(
-            `%${value}%`
-          );
-
-        });
-      }
-    }
-
-    if (fulfillment_status) {
-      const statuses = fulfillment_status.split(',');
-      const parts = statuses.map(s => {
-        if (s === 'unfulfilled') return 'fulfillment_status IS NULL OR fulfillment_status = "unfulfilled"';
-        return 'fulfillment_status = ?';
-      });
-      whereClauses.push(`(${parts.join(' OR ')})`);
-      statuses.forEach(s => { if (s !== 'unfulfilled') queryParams.push(s); });
-    }
-
-    if (financial_status) {
-      const statuses = financial_status.split(',');
-      whereClauses.push(`financial_status IN (${statuses.map(() => '?').join(',')})`);
-      queryParams.push(...statuses);
-    }
-
-    if (amount_min) {
-      whereClauses.push('total_price >= ?');
-      queryParams.push(parseFloat(amount_min));
-    }
-    if (amount_max) {
-      whereClauses.push('total_price <= ?');
-      queryParams.push(parseFloat(amount_max));
-    }
-
-    const created_at_min = req.query.created_at_min;
-    const created_at_max = req.query.created_at_max;
-    if (created_at_min) {
-      whereClauses.push('created_at >= ?');
-      queryParams.push(created_at_min);
-    }
-    if (created_at_max) {
-      whereClauses.push('created_at <= ?');
-      queryParams.push(created_at_max);
-    }
+    const { whereSql, queryParams } = buildOrderFilters(req.query);
 
     const sort = req.query.sort || 'created_at';
     const direction = req.query.direction || 'DESC';
@@ -2568,55 +2084,74 @@ router.get('/', authenticateToken, async (req, res) => {
     const orderBy = validSortCols.includes(sort) ? sort : 'created_at';
     const orderDir = direction.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
-
     // Calculate stats for the current filters (or overall)
     const [statsRows] = await pool.query(
       `
-    SELECT 
-      COUNT(*) as total,
-
-      COALESCE(SUM(total_price), 0) as total_revenue,
-
-      COUNT(
-        CASE
-          WHEN fulfillment_status = 'fulfilled'
-          THEN 1
-        END
-      ) as fulfilled_count,
-
-      COUNT(
-        CASE
-          WHEN fulfillment_status IS NULL
-          OR fulfillment_status = 'unfulfilled'
-          THEN 1
-        END
-      ) as pending_count,
-
-      COALESCE(
-        SUM(
-          (
-            SELECT COALESCE(
-              SUM(
-                CAST(quantity AS UNSIGNED)
-              ),
-              0
-            )
-            FROM JSON_TABLE(
-              COALESCE(orders.line_items, '[]'),
-              '$[*]'
-              COLUMNS (
-                quantity INT PATH '$.quantity'
+      SELECT 
+        COUNT(*) as total,
+        COALESCE(SUM(total_price), 0) as total_revenue,
+        COUNT(
+          CASE
+            WHEN fulfillment_status = 'fulfilled'
+            THEN 1
+          END
+        ) as fulfilled_count,
+        COUNT(
+          CASE
+            WHEN fulfillment_status IS NULL
+            OR fulfillment_status = 'unfulfilled'
+            THEN 1
+          END
+        ) as pending_count,
+        COALESCE(
+          SUM(
+            (
+              SELECT COALESCE(
+                SUM(
+                  CAST(quantity AS UNSIGNED)
+                ),
+                0
               )
-            ) jt
-          )
-        ),
-        0
-      ) as total_products
-
-    FROM orders
-    ${whereSql}
-  `,
+              FROM JSON_TABLE(
+                COALESCE(orders.line_items, '[]'),
+                '$[*]'
+                COLUMNS (
+                  quantity INT PATH '$.quantity'
+                )
+              ) jt
+            )
+          ),
+          0
+        ) as total_products,
+        COALESCE(
+          SUM(
+            CASE
+              WHEN orders.tags IS NOT NULL AND orders.tags != ''
+              THEN (
+                SELECT COALESCE(SUM(CAST(quantity AS UNSIGNED)), 0)
+                FROM JSON_TABLE(COALESCE(orders.line_items, '[]'), '$[*]' COLUMNS (quantity INT PATH '$.quantity')) jt
+              )
+              ELSE 0
+            END
+          ),
+          0
+        ) as tagged_products,
+        COALESCE(
+          SUM(
+            CASE
+              WHEN orders.tags IS NULL OR orders.tags = ''
+              THEN (
+                SELECT COALESCE(SUM(CAST(quantity AS UNSIGNED)), 0)
+                FROM JSON_TABLE(COALESCE(orders.line_items, '[]'), '$[*]' COLUMNS (quantity INT PATH '$.quantity')) jt
+              )
+              ELSE 0
+            END
+          ),
+          0
+        ) as untagged_products
+      FROM orders
+      ${whereSql}
+      `,
       queryParams
     );
     const stats = statsRows[0];
