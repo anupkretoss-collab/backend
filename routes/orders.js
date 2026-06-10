@@ -3358,7 +3358,7 @@ router.post('/seed-test-order', authenticateToken, async (req, res) => {
   const fakeOrder = {
     id: 999999999,
     order_number: 999001,
-    email: 'test.customer@example.com',
+    email: 'testcustomer@yopmail.com',
     financial_status: 'paid',
     fulfillment_status: null,
     total_price: '15.97',
@@ -3372,7 +3372,7 @@ router.post('/seed-test-order', authenticateToken, async (req, res) => {
       id: 999999,
       first_name: 'Test',
       last_name: 'Customer',
-      email: 'test.customer@example.com',
+      email: 'testcustomer@yopmail.com',
       phone: '+447700900000',
     },
     shipping_address: {
