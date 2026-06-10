@@ -879,6 +879,136 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
   return pdfDoc.save();
 }
 
+// ─── 100mm × 150mm per-order record PDF ──────────────────────────────────────
+// One page per order, each page is label-sized (100 × 150mm).
+// Compact packing record — store name, order, address, items, passport, footer.
+export async function buildRecordPdf(orders) {
+  const MM = 2.8346;
+
+  function tr(text, maxW, font, size) {
+    if (!text) return '';
+    if (font.widthOfTextAtSize(text, size) <= maxW) return text;
+    while (text.length > 1 && font.widthOfTextAtSize(text + '…', size) > maxW) text = text.slice(0, -1);
+    return text + '…';
+  }
+
+  const pdfDoc = await PDFDocument.create();
+  const regular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const bold    = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  const storeName    = process.env.STORE_NAME    || 'South Devon Chilli Farm';
+  const storeAddr    = process.env.STORE_ADDRESS  || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
+  const storeEmail   = process.env.STORE_EMAIL    || 'orders@sdcf.co.uk';
+  const storeWebsite = process.env.STORE_WEBSITE  || 'southdevonchillifarm.co.uk';
+  const storeEori    = process.env.STORE_EORI     || 'GB885490630200';
+
+  for (const order of orders) {
+    // 100mm × 150mm page
+    const W = 100 * MM;  // 283.46pt
+    const H = 150 * MM;  // 425.2pt
+    const page = pdfDoc.addPage([W, H]);
+
+    const ML = 5 * MM;
+    const MR = W - 5 * MM;
+    const CW = MR - ML;
+
+    const c  = order.customer || {};
+    const sa = order.shipping_address || {};
+
+    const orderDate = order.created_at
+      ? new Date(order.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+      : '';
+
+    let y = H - 7 * MM;
+
+    // ── Store name + order number ──────────────────────────────
+    page.drawText(tr(storeName.toUpperCase(), CW * 0.6, bold, 9), {
+      x: ML, y, size: 9, font: bold, color: rgb(0, 0, 0),
+    });
+    const orderRef = `#${order.order_number}`;
+    page.drawText(orderRef, {
+      x: MR - bold.widthOfTextAtSize(orderRef, 9), y,
+      size: 9, font: bold, color: rgb(0, 0, 0),
+    });
+    y -= 4 * MM;
+
+    if (orderDate) {
+      const dw = regular.widthOfTextAtSize(orderDate, 7.5);
+      page.drawText(orderDate, { x: MR - dw, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
+    }
+    y -= 3 * MM;
+
+    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
+    y -= 4 * MM;
+
+    // ── Ship To ───────────────────────────────────────────────
+    page.drawText('SHIP TO', { x: ML, y, size: 7, font: bold, color: rgb(0, 0, 0) });
+    y -= 3.5 * MM;
+
+    const phone = sa.phone || c.phone || '';
+    const addrLines = [
+      sa.name, sa.company, sa.address1, sa.address2,
+      [sa.city, sa.province, sa.zip].filter(Boolean).join(', '),
+      sa.country, phone,
+    ].filter(Boolean);
+
+    for (const line of addrLines) {
+      page.drawText(tr(line, CW, regular, 8.5), { x: ML, y, size: 8.5, font: regular, color: rgb(0, 0, 0) });
+      y -= 4 * MM;
+    }
+    y -= 1 * MM;
+
+    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
+    y -= 4 * MM;
+
+    // ── Items ─────────────────────────────────────────────────
+    page.drawText('ITEMS', { x: ML, y, size: 7, font: bold, color: rgb(0, 0, 0) });
+    page.drawText('QTY', { x: MR - bold.widthOfTextAtSize('QTY', 7), y, size: 7, font: bold, color: rgb(0, 0, 0) });
+    y -= 3.5 * MM;
+
+    const lineItems = order.line_items || [];
+    const totalQty  = lineItems.reduce((s, li) => s + (li.quantity || 1), 0);
+    for (const li of lineItems) {
+      const title  = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
+      const qtyStr = `${li.quantity}/${totalQty}`;
+      const qw     = regular.widthOfTextAtSize(qtyStr, 8);
+      page.drawText(tr(title, CW - qw - 3 * MM, regular, 8), { x: ML, y, size: 8, font: regular, color: rgb(0, 0, 0) });
+      page.drawText(qtyStr, { x: MR - qw, y, size: 8, font: regular, color: rgb(0, 0, 0) });
+      y -= 4 * MM;
+    }
+
+    if (order.note) {
+      page.drawText(tr(`Note: ${order.note}`, CW, regular, 7), { x: ML, y, size: 7, font: regular, color: rgb(0.6, 0.3, 0) });
+      y -= 3.5 * MM;
+    }
+    y -= 1 * MM;
+
+    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
+    y -= 3.5 * MM;
+
+    // ── UK Plant Passport ─────────────────────────────────────
+    page.drawText('UK Plant Passport  A Variety: see packet/label  B 100561  D GB', {
+      x: ML, y, size: 6.5, font: regular, color: rgb(0, 0, 0),
+    });
+    y -= 4 * MM;
+
+    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.25, color: rgb(0.7, 0.7, 0.7) });
+    y -= 3.5 * MM;
+
+    // ── Footer ────────────────────────────────────────────────
+    for (const line of [storeName, storeAddr, `${storeEmail}  |  ${storeWebsite}`, `EORI No: ${storeEori}`]) {
+      const lw = regular.widthOfTextAtSize(line, 6);
+      page.drawText(tr(line, CW, regular, 6), {
+        x: ML + (CW - Math.min(lw, CW)) / 2, y,
+        size: 6, font: regular, color: rgb(0.45, 0.45, 0.45),
+      });
+      y -= 3.2 * MM;
+    }
+  }
+
+  return pdfDoc.save();
+}
+
 // ─── STEP 8 — Generate shipping CSV ──────────────────────────────────────────
 // POST /api/preorders/shipping-csv
 // Body: { orders, carrier: 'Royal Mail' | 'DPD', shippingDate }

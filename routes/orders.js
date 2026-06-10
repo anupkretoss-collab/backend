@@ -3119,6 +3119,36 @@ router.post('/s17-packingslips', authenticateToken, async (req, res) => {
   }
 });
 
+// ─── POST /api/orders/order-records ──────────────────────────────────────────
+// Body: { orderIds: [] }
+// Returns a multi-page PDF — one 100mm×150mm page per order — compact packing record.
+router.post('/order-records', authenticateToken, async (req, res) => {
+  try {
+    const { buildRecordPdf } = await import('./preorders.js');
+    const { orderIds = [] } = req.body;
+    if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
+
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT raw_data FROM orders WHERE id IN (${placeholders})`,
+      orderIds
+    );
+    const orders = rows
+      .map(r => (typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data))
+      .filter(Boolean);
+
+    const pdfBuffer = await buildRecordPdf(orders);
+    const date = new Date().toISOString().slice(0, 10);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="order_records_${date}.pdf"`);
+    res.send(Buffer.from(pdfBuffer));
+  } catch (err) {
+    console.error('order-records error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // ─── POST /api/orders/royal-mail-s17 ─────────────────────────────────────────
 // Body: { orderIds, despatchDate }
 // Runs Royal Mail process (create/match + fetch individual labels) and returns
