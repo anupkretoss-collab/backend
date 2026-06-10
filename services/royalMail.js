@@ -195,17 +195,17 @@ export async function mergeLabels(pdfBuffers) {
 }
 
 /**
- * Create a manifest in Royal Mail Click & Drop.
- * Pass orderIdentifiers array to manifest specific orders, or omit to manifest all eligible orders.
- * Returns the manifest response data: { manifests: [guid, ...] }
+ * Create a manifest in Royal Mail Click & Drop for the given order identifiers ONLY.
+ * orderIdentifiers must be a non-empty array — never manifests all orders.
  */
 export async function createManifest(orderIdentifiers) {
-  // carrierName is required by the API even though not in Swagger schema.
-  // This account uses 'Royal Mail OBA' (not 'Royal Mail').
-  const base = { carrierName: 'Royal Mail OBA' };
-  const body = orderIdentifiers?.length
-    ? { ...base, orderIdentifiers: orderIdentifiers.map(Number) }
-    : { ...base, allOrders: true };
+  if (!orderIdentifiers?.length) {
+    throw new Error('orderIdentifiers is required — pass the identifiers returned by the labelling step.');
+  }
+  const body = {
+    carrierName: 'Royal Mail OBA',
+    orderIdentifiers: orderIdentifiers.map(Number),
+  };
   const { data } = await axios.post(`${BASE}/manifests`, body, {
     headers: authHeaders(),
   });

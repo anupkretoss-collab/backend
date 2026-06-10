@@ -3006,7 +3006,8 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
 });
 
 // POST /api/orders/royal-mail-manifest
-// Manifests all ready orders in Royal Mail Click & Drop; returns manifest PDF if available.
+// Body: { orderIdentifiers: [] } — required; manifests ONLY the specified orders.
+// Returns manifest PDF if available. Rejects with 400 if identifiers are missing.
 router.post('/royal-mail-manifest', authenticateToken, async (req, res) => {
   try {
     const { createManifest, getManifestLabel, isConfigured } = await import('../services/royalMail.js');
@@ -3015,9 +3016,11 @@ router.post('/royal-mail-manifest', authenticateToken, async (req, res) => {
       return res.status(503).json({ message: 'Royal Mail API token not configured.' });
     }
 
-    // Accept specific order identifiers from the frontend (created in the process step)
     const { orderIdentifiers } = req.body || {};
-    const manifest = await createManifest(orderIdentifiers?.length ? orderIdentifiers : undefined);
+    if (!orderIdentifiers?.length) {
+      return res.status(400).json({ message: 'orderIdentifiers is required — run the Royal Mail labelling step first to get order identifiers, then manifest only those orders.' });
+    }
+    const manifest = await createManifest(orderIdentifiers);
 
     // The API returns { manifestNumber, documentPdf: base64 } directly — no polling needed
     if (manifest.documentPdf) {
