@@ -285,6 +285,375 @@ router.post('/packingslip', authenticateToken, (req, res) => {
   }
 });
 
+// ─── Shared CSV builder (exported for use in orders.js) ──────────────────────
+
+function splitName(fullName) {
+  const parts = (fullName || '').trim().split(' ');
+  const last = parts.length > 1 ? parts.pop() : '';
+  return { first: parts.join(' '), last };
+}
+
+function calcWeightG(lineItems) {
+  const total = (lineItems || []).reduce((sum, li) => {
+    const grams = li.grams > 0 ? li.grams : 999;
+    return sum + grams * (li.quantity || 1);
+  }, 0);
+  return total || 999;
+}
+
+function csvEscape(val) {
+  return `"${String(val || '').replace(/"/g, '""')}"`;
+}
+
+export function buildShippingCsv(orders, carrier) {
+  if (carrier === 'Royal Mail') {
+    const header = [
+      'Order ID', 'E-mail', 'Shipping: first name', 'Shipping: last name',
+      'Shipping Address', 'Shipping: address2', 'Shipping: city',
+      'Shipping: state', 'Shipping: country', 'Shipping: zipcode',
+      'Notes', 'Phone', 'Weight in g', 'Weight', 'Package Size', 'Service Code',
+    ].join(',');
+
+    const rows = orders.map(o => {
+      const a = o.shipping_address || {};
+      const c = o.customer || {};
+      const rawFirst = c.first_name || '';
+      const rawLast  = c.last_name  || '';
+      const { first, last } = (rawFirst || rawLast)
+        ? { first: rawFirst, last: rawLast }
+        : splitName(a.name);
+      const weightG = calcWeightG(o.line_items);
+      return [
+        csvEscape(`#${o.order_number}`),
+        csvEscape(c.email || o.email || ''),
+        csvEscape(first),
+        csvEscape(last),
+        csvEscape(a.address1 || ''),
+        csvEscape(a.address2 || ''),
+        csvEscape(a.city || ''),
+        csvEscape(a.province || ''),
+        csvEscape(a.country || 'United Kingdom'),
+        csvEscape(a.zip || ''),
+        csvEscape(o.note || ''),
+        csvEscape(a.phone || c.phone || ''),
+        weightG,
+        (weightG / 1000).toFixed(2),
+        'Parcel',
+        'TPS48',
+      ].join(',');
+    });
+
+    return [header, ...rows].join('\n');
+  }
+
+  // DPD format — matches DPD Local import template
+  // Service column added at end: "DPD Express Pack" or "DPD Parcel" based on Shopify order tags
+  const header = [
+    '#Order', 'e-mail', 'First name', 'Last name',
+    'Address1', 'Address2', 'City', 'Country', 'Zip',
+    'Order Notes', 'Phone', 'Weight (kg)', 'Service',
+  ].join(',');
+
+  const rows = orders.map(o => {
+    const a = o.shipping_address || {};
+    const c = o.customer || {};
+    const rawFirst = c.first_name || '';
+    const rawLast  = c.last_name  || '';
+    const { first, last } = (rawFirst || rawLast)
+      ? { first: rawFirst, last: rawLast }
+      : splitName(a.name);
+    const weightG = calcWeightG(o.line_items);
+    const tags = (o.tags || '').toLowerCase();
+    const service = tags.includes('dpd-parcel') ? 'DPD Parcel' : 'DPD Express Pack';
+    return [
+      csvEscape(`#${o.order_number}`),
+      csvEscape(c.email || o.email || ''),
+      csvEscape(first),
+      csvEscape(last),
+      csvEscape(a.address1 || ''),
+      csvEscape(a.address2 || ''),
+      csvEscape(a.city || ''),
+      csvEscape(a.country || 'United Kingdom'),
+      csvEscape(a.zip || ''),
+      csvEscape(o.note || ''),
+      csvEscape(a.phone || c.phone || ''),
+      (weightG / 1000).toFixed(2),
+      csvEscape(service),
+    ].join(',');
+  });
+
+  return [header, ...rows].join('\n');
+}
+
+// ─── Shared Order Packing Slip builder (Shopify-style, no label area) ─────────
+
+export function buildOrderPackingSlipHtml(orders) {
+  const storeName    = process.env.STORE_NAME    || 'South Devon Chilli Farm';
+  const storeAddr    = process.env.STORE_ADDRESS  || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
+  const storeEmail   = process.env.STORE_EMAIL    || 'orders@sdcf.co.uk';
+  const storeWebsite = process.env.STORE_WEBSITE  || 'southdevonchillifarm.co.uk';
+  const storeEori    = process.env.STORE_EORI     || 'GB885490630200';
+
+  const pages = orders.map(o => {
+    const c  = o.customer || {};
+    const sa = o.shipping_address || {};
+    const ba = o.billing_address  || sa;
+
+    const fmtAddr = (addr) => [
+      addr.name,
+      addr.company,
+      addr.address1,
+      addr.address2,
+      `${addr.city || ''}${addr.province ? ' ' + addr.province : ''} ${addr.zip || ''}`.trim(),
+      addr.country,
+    ].filter(Boolean).join('<br>');
+
+    const phone = sa.phone || c.phone || '';
+    const totalQty = (o.line_items || []).reduce((s, li) => s + (li.quantity || 1), 0);
+
+    const itemRows = (o.line_items || []).map(li =>
+      `<tr>
+        <td class="item-name">${li.title}${li.variant_title && li.variant_title !== 'Default Title' ? ' — ' + li.variant_title : ''}</td>
+        <td class="item-qty">${li.quantity} of ${totalQty}</td>
+      </tr>`
+    ).join('');
+
+    const orderDate = o.created_at
+      ? new Date(o.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+      : '';
+
+    return `
+<div class="order-page">
+  <div class="header-row">
+    <span class="store-name">${storeName.toUpperCase()}</span>
+    <div class="order-meta">
+      <div>Order #${o.order_number}</div>
+      <div>${orderDate}</div>
+    </div>
+  </div>
+  <hr>
+  <div class="address-row">
+    <div class="address-block">
+      <div class="address-label">SHIP TO</div>
+      <div>${fmtAddr(sa)}</div>
+      ${phone ? `<div style="margin-top:3mm">${phone}</div>` : ''}
+    </div>
+    <div class="address-block">
+      <div class="address-label">BILL TO</div>
+      <div>${fmtAddr(ba)}</div>
+    </div>
+  </div>
+  <hr>
+  <table class="items-table">
+    <thead>
+      <tr><th class="item-name">ITEMS</th><th class="item-qty">QUANTITY</th></tr>
+    </thead>
+    <tbody>${itemRows}</tbody>
+  </table>
+  <hr>
+  <div class="passport-section">
+    <div>UK Plant Passport</div>
+    <div>A Variety: see packet/label</div>
+    <div>B 100561 &nbsp;&nbsp; C &nbsp;&nbsp; D GB &nbsp;&nbsp; E</div>
+  </div>
+  <hr>
+  <div class="footer">
+    <div>Thank you for shopping with us!</div>
+    <br>
+    <div>${storeName}</div>
+    <div>${storeAddr}</div>
+    <div>${storeEmail}</div>
+    <div>${storeWebsite}</div>
+    <br>
+    <div>EORI No: ${storeEori}</div>
+  </div>
+</div>`;
+  }).join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Order Packing Slips</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; background: #fff; font-size: 10pt; }
+  @page { size: A4 portrait; margin: 15mm; }
+  .order-page { page-break-after: always; min-height: 250mm; }
+  .header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 5mm; }
+  .store-name { font-size: 13pt; font-weight: bold; }
+  .order-meta { text-align: right; font-size: 9pt; color: #444; }
+  hr { border: none; border-top: 1px solid #000; margin: 4mm 0; }
+  .address-row { display: flex; gap: 10mm; margin-bottom: 5mm; }
+  .address-block { flex: 1; }
+  .address-label { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2mm; }
+  .items-table { width: 100%; border-collapse: collapse; margin-bottom: 5mm; }
+  .items-table th { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; padding: 2mm 0; }
+  .items-table td { padding: 1.5mm 0; vertical-align: top; }
+  .item-name { width: 80%; }
+  .item-qty { width: 20%; text-align: right; }
+  .passport-section { font-size: 9pt; line-height: 1.8; margin-bottom: 4mm; }
+  .footer { font-size: 9pt; text-align: center; color: #333; line-height: 1.8; }
+</style>
+</head>
+<body>
+${pages}
+<script>window.onload = () => window.print();</script>
+</body>
+</html>`;
+}
+
+// ─── Shared S/17 HTML builder (exported for use in orders.js) ────────────────
+
+export function buildS17Html(orders, shippingDate) {
+  const storeName    = process.env.STORE_NAME    || 'South Devon Chilli Farm';
+  const storeAddr    = process.env.STORE_ADDRESS  || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
+  const storeEmail   = process.env.STORE_EMAIL    || 'orders@sdcf.co.uk';
+  const storeWebsite = process.env.STORE_WEBSITE  || 'southdevonchillifarm.co.uk';
+  const storeEori    = process.env.STORE_EORI     || 'GB885490630200';
+
+  const pages = orders.map(o => {
+    const c  = o.customer || {};
+    const sa = o.shipping_address || {};
+    const ba = o.billing_address  || sa;
+
+    const fmtAddr = (addr) => [
+      addr.name,
+      addr.address1,
+      addr.address2,
+      addr.city,
+      addr.province,
+      addr.zip,
+      addr.country,
+    ].filter(Boolean).join('<br>');
+
+    const phone = sa.phone || c.phone || ba.phone || '';
+    const email = c.email  || o.email || '';
+
+    const itemRows = (o.line_items || []).map((li, idx, arr) =>
+      `<tr>
+        <td class="item-name">${li.title}${li.variant_title && li.variant_title !== 'Default Title' ? ' — ' + li.variant_title : ''}</td>
+        <td class="item-qty">${li.quantity} of ${arr.reduce((s, x) => s + x.quantity, 0)}</td>
+      </tr>`
+    ).join('');
+
+    const orderDate = o.created_at
+      ? new Date(o.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+      : (shippingDate || '');
+
+    return `
+<div class="order-page">
+  <div class="content-area">
+    <div class="header-row">
+      <span class="store-name">${storeName.toUpperCase()}</span>
+      <span class="order-meta">Order #${o.order_number}&nbsp;&nbsp;${orderDate}</span>
+    </div>
+    <hr>
+    <div class="address-row">
+      <div class="address-block">
+        <div class="address-label">SHIP TO</div>
+        <div>${fmtAddr(sa)}</div>
+        ${phone ? `<div>${phone}</div>` : ''}
+      </div>
+      <div class="address-block">
+        <div class="address-label">BILL TO</div>
+        <div>${fmtAddr(ba)}</div>
+        ${email ? `<div>${email}</div>` : ''}
+      </div>
+    </div>
+    <hr>
+    <table class="items-table">
+      <thead>
+        <tr><th class="item-name">ITEMS</th><th class="item-qty">QUANTITY</th></tr>
+      </thead>
+      <tbody>${itemRows}</tbody>
+    </table>
+    ${o.note ? `<div class="note"><strong>Note:</strong> ${o.note}</div>` : ''}
+    <hr>
+    <div class="footer">
+      <div>Thank you for shopping with us!</div>
+      <div>${storeName}, ${storeAddr}, ${storeEmail}, ${storeWebsite}</div>
+      <div>EORI No: ${storeEori}</div>
+      <div class="passport">UK Plant Passport &nbsp; A Variety: see packet/label &nbsp; B 100561 &nbsp; C &nbsp; D GB &nbsp; E</div>
+    </div>
+  </div>
+  <div class="label-area">Shipping label — attach here</div>
+</div>`;
+  }).join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>S/17 Packing Slips${shippingDate ? ' — ' + shippingDate : ''}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; background: #fff; }
+
+  @page { size: A4 portrait; margin: 0; }
+
+  .order-page {
+    width: 210mm;
+    height: 297mm;
+    page-break-after: always;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .content-area {
+    padding: 8mm 10mm 4mm;
+    flex: 0 0 auto;
+    max-height: 130mm;
+    overflow: hidden;
+    font-size: 9pt;
+    line-height: 1.4;
+  }
+
+  .header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 3mm;
+  }
+  .store-name { font-size: 11pt; font-weight: bold; }
+  .order-meta { font-size: 9pt; color: #555; }
+
+  hr { border: none; border-top: 1px solid #ccc; margin: 3mm 0; }
+
+  .address-row { display: flex; gap: 6mm; margin-bottom: 3mm; }
+  .address-block { flex: 1; }
+  .address-label { font-weight: bold; font-size: 8pt; margin-bottom: 1mm; letter-spacing: 0.5px; }
+
+  .items-table { width: 100%; border-collapse: collapse; margin-bottom: 2mm; }
+  .items-table th { font-size: 8pt; font-weight: bold; text-align: left; padding-bottom: 1mm; letter-spacing: 0.5px; }
+  .items-table td { font-size: 9pt; padding: 1mm 0; }
+  .item-qty { text-align: right; white-space: nowrap; }
+  .item-name { width: 85%; }
+
+  .note { font-size: 8pt; color: #b45309; margin-top: 2mm; }
+
+  .footer { font-size: 7pt; color: #666; line-height: 1.5; }
+  .passport { margin-top: 1mm; }
+
+  .label-area {
+    flex: 1;
+    border-top: 1.5px dashed #aaa;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #bbb;
+    font-size: 8pt;
+    font-family: Arial, sans-serif;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+${pages}
+</body>
+</html>`;
+}
+
 // ─── STEP 8 — Generate shipping CSV ──────────────────────────────────────────
 // POST /api/preorders/shipping-csv
 // Body: { orders, carrier: 'Royal Mail' | 'DPD', shippingDate }
@@ -293,59 +662,26 @@ router.post('/shipping-csv', authenticateToken, (req, res) => {
     const { orders = [], carrier = 'Royal Mail', shippingDate = '' } = req.body;
 
     const filtered = orders.filter(o => getCarrier(o) === carrier);
-
-    let csv = '';
-
-    if (carrier === 'Royal Mail') {
-      // RM 48hr format
-      csv = 'Order Number,Name,Address Line 1,Address Line 2,City,County,Postcode,Country,Phone,Email,Weight,Service\n';
-      csv += filtered.map(o => {
-        const a = o.shipping_address || {};
-        const c = o.customer || {};
-        const name = a.name || `${c.first_name || ''} ${c.last_name || ''}`.trim();
-        return [
-          `#${o.order_number}`,
-          `"${name}"`,
-          `"${a.address1 || ''}"`,
-          `"${a.address2 || ''}"`,
-          `"${a.city || ''}"`,
-          `"${a.province || ''}"`,
-          `"${a.zip || ''}"`,
-          `"${a.country || 'GB'}"`,
-          `"${a.phone || c.phone || ''}"`,
-          `"${c.email || ''}"`,
-          '0.5',
-          'CRL48',
-        ].join(',');
-      }).join('\n');
-    } else {
-      // DPD format
-      csv = 'Order Number,Name,Address Line 1,Address Line 2,City,County,Postcode,Country,Phone,Email,Weight,Service\n';
-      csv += filtered.map(o => {
-        const a = o.shipping_address || {};
-        const c = o.customer || {};
-        const name = a.name || `${c.first_name || ''} ${c.last_name || ''}`.trim();
-        return [
-          `#${o.order_number}`,
-          `"${name}"`,
-          `"${a.address1 || ''}"`,
-          `"${a.address2 || ''}"`,
-          `"${a.city || ''}"`,
-          `"${a.province || ''}"`,
-          `"${a.zip || ''}"`,
-          `"${a.country || 'GB'}"`,
-          `"${a.phone || c.phone || ''}"`,
-          `"${c.email || ''}"`,
-          '0.5',
-          'DPD',
-        ].join(',');
-      }).join('\n');
-    }
+    const csv = buildShippingCsv(filtered, carrier);
 
     const filename = `${carrier.replace(' ', '_')}_${shippingDate.replace(/\//g, '-')}.csv`;
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(csv);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── STEP 8b — Individual per-order S/17 packing slips ───────────────────────
+// POST /api/preorders/s17-packingslips
+// Body: { orders, shippingDate }
+router.post('/s17-packingslips', authenticateToken, (req, res) => {
+  try {
+    const { orders = [], shippingDate = '' } = req.body;
+    const html = buildS17Html(orders, shippingDate);
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

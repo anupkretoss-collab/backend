@@ -348,6 +348,7 @@ export function buildOrderFilters(query) {
     search,
     tags,
     varieties,
+    varieties_exclude,
     shipping,
     fulfillment_status,
     financial_status,
@@ -357,10 +358,22 @@ export function buildOrderFilters(query) {
     amount_max,
     created_at_min,
     created_at_max,
+    order_ids,
   } = query;
 
   let whereClauses = [];
   let queryParams = [];
+
+  // ── order_ids shortcut: bypass all other filters ──────────────────────────
+  if (order_ids) {
+    const ids = String(order_ids).split(',').map(id => id.trim()).filter(Boolean);
+    if (ids.length > 0) {
+      whereClauses.push(`id IN (${ids.map(() => '?').join(',')})`);
+      ids.forEach(id => queryParams.push(id));
+      const whereSql = `WHERE ${whereClauses.join(' AND ')}`;
+      return { whereSql, queryParams };
+    }
+  }
 
   // ============================================
   // SEARCH
@@ -736,6 +749,20 @@ export function buildOrderFilters(query) {
           `%${value}%`
         );
       });
+    }
+  }
+
+  // ── varieties_exclude: show orders that DO NOT contain these varieties ────
+  if (varieties_exclude) {
+    const excludeValues = decodeURIComponent(varieties_exclude)
+      .split(',')
+      .map(v => v.trim().toLowerCase().replace(/\s+/g, ' '))
+      .filter(Boolean);
+
+    if (excludeValues.length > 0) {
+      const conditions = excludeValues.map(() => `LOWER(line_items) NOT LIKE ?`);
+      whereClauses.push(`(${conditions.join(' AND ')})`);
+      excludeValues.forEach(value => queryParams.push(`%${value}%`));
     }
   }
 
@@ -2760,5 +2787,353 @@ router.post(
     }
   }
 );
+
+// ─── Royal Mail Click & Drop integration ─────────────────────────────────────
+
+// POST /api/orders/royal-mail-create
+// Body: { orderIds: [], despatchDate: 'YYYY-MM-DD' }
+// Creates shipments in Royal Mail Click & Drop; returns tracking numbers.
+router.post('/royal-mail-create', authenticateToken, async (req, res) => {
+  try {
+    const { createShipment, isConfigured } = await import('../services/royalMail.js');
+
+    if (!isConfigured()) {
+      return res.status(503).json({ message: 'Royal Mail API token not configured. Set ROYAL_MAIL_OBA_TOKEN in .env' });
+    }
+
+    const { orderIds = [], despatchDate } = req.body;
+    if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
+
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT raw_data FROM orders WHERE id IN (${placeholders})`,
+      orderIds
+    );
+    const orders = rows
+      .map(r => (typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data))
+      .filter(Boolean);
+
+    const results = [];
+    for (const order of orders) {
+      try {
+        const result = await createShipment(order, despatchDate);
+        results.push({ success: true, ...result });
+      } catch (err) {
+        const msg = err.response?.data?.message || JSON.stringify(err.response?.data) || err.message;
+        results.push({
+          success: false,
+          shopifyOrderId: order.id,
+          orderNumber: order.order_number,
+          error: msg,
+        });
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    const succeeded = results.filter(r => r.success);
+    const failed    = results.filter(r => !r.success);
+    res.json({ total: results.length, succeeded: succeeded.length, failed: failed.length, results });
+  } catch (err) {
+    console.error('royal-mail-create error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// POST /api/orders/royal-mail-labels
+// Body: { rmOrderIdentifiers: ['uuid1', ...] }
+// Fetches label PDFs from Royal Mail, merges them into a single PDF.
+router.post('/royal-mail-labels', authenticateToken, async (req, res) => {
+  try {
+    const { getLabel, mergeLabels, isConfigured } = await import('../services/royalMail.js');
+
+    if (!isConfigured()) {
+      return res.status(503).json({ message: 'Royal Mail API token not configured.' });
+    }
+
+    const { rmOrderIdentifiers = [] } = req.body;
+    if (!rmOrderIdentifiers.length) return res.status(400).json({ message: 'rmOrderIdentifiers is required' });
+
+    const pdfBuffers = [];
+    const errors = [];
+
+    for (const id of rmOrderIdentifiers) {
+      let buf = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          buf = await getLabel(id);
+          break;
+        } catch {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      if (buf) pdfBuffers.push(buf);
+      else errors.push(id);
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    if (!pdfBuffers.length) {
+      return res.status(404).json({ message: 'No labels could be retrieved', errors });
+    }
+
+    const mergedPdf = await mergeLabels(pdfBuffers);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="royal_mail_labels_${new Date().toISOString().slice(0, 10)}.pdf"`);
+    if (errors.length) res.setHeader('X-Failed-Labels', errors.join(','));
+    res.send(mergedPdf);
+  } catch (err) {
+    console.error('royal-mail-labels error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// POST /api/orders/royal-mail-manifest
+// Manifests all ready orders in Royal Mail Click & Drop; returns manifest PDF if available.
+router.post('/royal-mail-manifest', authenticateToken, async (req, res) => {
+  try {
+    const { createManifest, getManifestLabel, isConfigured } = await import('../services/royalMail.js');
+
+    if (!isConfigured()) {
+      return res.status(503).json({ message: 'Royal Mail API token not configured.' });
+    }
+
+    const manifest = await createManifest();
+
+    if (manifest.manifestIdentifier) {
+      await new Promise(r => setTimeout(r, 1500));
+      const pdfBuf = await getManifestLabel(manifest.manifestIdentifier);
+      if (pdfBuf) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="manifest_${manifest.manifestIdentifier}.pdf"`);
+        res.setHeader('X-Manifest-Id', manifest.manifestIdentifier);
+        return res.send(pdfBuf);
+      }
+    }
+
+    res.json(manifest);
+  } catch (err) {
+    const apiMsg = err.response?.data?.message || JSON.stringify(err.response?.data);
+    console.error('royal-mail-manifest error:', apiMsg || err.message);
+    res.status(500).json({ message: apiMsg || err.message });
+  }
+});
+
+// ─── POST /api/orders/shipping-csv ───────────────────────────────────────────
+// Body: { orderIds: [], carrier: 'Royal Mail' | 'DPD' }
+router.post('/shipping-csv', authenticateToken, async (req, res) => {
+  try {
+    const { orderIds = [], carrier = 'Royal Mail' } = req.body;
+    if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
+
+    const { buildShippingCsv } = await import('./preorders.js');
+
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT raw_data FROM orders WHERE id IN (${placeholders})`,
+      orderIds
+    );
+
+    const orders = rows.map(r => {
+      const raw = typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data;
+      return raw;
+    }).filter(Boolean);
+
+    const csv = buildShippingCsv(orders, carrier);
+    const date = new Date().toISOString().slice(0, 10);
+    const filename = `${carrier.replace(' ', '_')}_${date}.csv`;
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csv);
+  } catch (err) {
+    console.error('shipping-csv error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── POST /api/orders/s17-packingslips ───────────────────────────────────────
+// Body: { orderIds: [] }
+router.post('/s17-packingslips', authenticateToken, async (req, res) => {
+  try {
+    const { orderIds = [] } = req.body;
+    if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
+
+    const { buildS17Html } = await import('./preorders.js');
+
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT raw_data FROM orders WHERE id IN (${placeholders})`,
+      orderIds
+    );
+
+    const orders = rows.map(r => {
+      const raw = typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data;
+      return raw;
+    }).filter(Boolean);
+
+    const date = new Date().toLocaleDateString('en-GB');
+    const html = buildS17Html(orders, date);
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
+  } catch (err) {
+    console.error('s17-packingslips error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── POST /api/orders/send-notification ──────────────────────────────────────
+// Body: { orderIds: [], trackingNumbers?: { [shopifyOrderId]: { trackingNumber, carrier } } }
+// Sends Brevo dispatch email to each order's customer
+router.post('/send-notification', authenticateToken, async (req, res) => {
+  try {
+    const { orderIds = [], trackingNumbers = {} } = req.body;
+    if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
+
+    const { isConfigured, sendOrderNotification } = await import('../services/email.js');
+    if (!isConfigured()) {
+      return res.status(503).json({ message: 'Email not configured. Set EMAIL_USER and EMAIL_PASS in .env' });
+    }
+
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT raw_data FROM orders WHERE id IN (${placeholders})`,
+      orderIds
+    );
+
+    const orders = rows.map(r => {
+      const raw = typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data;
+      return raw;
+    }).filter(Boolean);
+
+    const results = [];
+    for (const order of orders) {
+      try {
+        const tracking = trackingNumbers[order.id] || null;
+        const result = await sendOrderNotification(order, tracking);
+        results.push({ orderNumber: order.order_number, ...result, success: true });
+      } catch (err) {
+        results.push({
+          orderNumber: order.order_number,
+          error: err.message,
+          success: false,
+        });
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    res.json({ results });
+  } catch (err) {
+    console.error('send-notification error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── POST /api/orders/order-packing-slips ────────────────────────────────────
+// Body: { orderIds: [] }
+// Returns Shopify-style per-order packing slip HTML (auto-prints)
+router.post('/order-packing-slips', authenticateToken, async (req, res) => {
+  try {
+    const { orderIds = [] } = req.body;
+    if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
+
+    const { buildOrderPackingSlipHtml } = await import('./preorders.js');
+
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT raw_data FROM orders WHERE id IN (${placeholders}) ORDER BY order_number ASC`,
+      orderIds
+    );
+
+    const orders = rows.map(r => {
+      const raw = typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data;
+      return raw;
+    }).filter(Boolean);
+
+    const html = buildOrderPackingSlipHtml(orders);
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
+  } catch (err) {
+    console.error('order-packing-slips error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── POST /api/orders/dpd-create ─────────────────────────────────────────────
+// Body: { orderIds: [], despatchDate: 'YYYY-MM-DD' }
+router.post('/dpd-create', authenticateToken, async (req, res) => {
+  try {
+    const { orderIds = [], despatchDate } = req.body;
+    if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
+
+    const { isConfigured, createShipment } = await import('../services/dpd.js');
+    if (!isConfigured()) {
+      return res.status(503).json({ message: 'DPD not configured. Set DPD_USERNAME and DPD_PASSWORD in .env' });
+    }
+
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT raw_data FROM orders WHERE id IN (${placeholders})`,
+      orderIds
+    );
+
+    const orders = rows.map(r => {
+      const raw = typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data;
+      return raw;
+    }).filter(Boolean);
+
+    const results = [];
+    for (const order of orders) {
+      try {
+        const result = await createShipment(order, despatchDate || new Date().toISOString().slice(0, 10));
+        results.push(result);
+      } catch (err) {
+        results.push({
+          orderNumber: order.order_number,
+          shopifyOrderId: order.id,
+          error: err.response?.data?.error?.errorMessage || err.message,
+        });
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    res.json({ results });
+  } catch (err) {
+    console.error('dpd-create error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── POST /api/orders/dpd-labels ─────────────────────────────────────────────
+// Body: { consignmentNumbers: [] }
+router.post('/dpd-labels', authenticateToken, async (req, res) => {
+  try {
+    const { consignmentNumbers = [] } = req.body;
+    if (!consignmentNumbers.length) return res.status(400).json({ message: 'consignmentNumbers is required' });
+
+    const { getLabel, mergeLabels } = await import('../services/dpd.js');
+
+    const pdfBuffers = [];
+    for (const cn of consignmentNumbers) {
+      // Retry up to 3 times with 2s delay
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const buf = await getLabel(cn);
+          if (buf && buf.length > 100) { pdfBuffers.push(buf); break; }
+        } catch (err) {
+          if (attempt === 2) console.warn(`Label fetch failed for ${cn}:`, err.message);
+          else await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+    }
+
+    if (!pdfBuffers.length) return res.status(404).json({ message: 'No labels retrieved' });
+
+    const merged = await mergeLabels(pdfBuffers);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="dpd_labels_${new Date().toISOString().slice(0, 10)}.pdf"`);
+    res.send(merged);
+  } catch (err) {
+    console.error('dpd-labels error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
 
 export default router;
