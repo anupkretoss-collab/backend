@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import dotenv from 'dotenv';
 import axios from 'axios';
 dotenv.config();
@@ -15,6 +16,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 // Capture raw body for Shopify HMAC validation
 app.use('/api/webhooks', webhookRoutes);
+
+app.use(compression());
 
 app.use(
   cors({

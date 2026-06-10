@@ -54,8 +54,11 @@ export async function runMigrations() {
     password: process.env.DB_PASSWORD || '',
     database: DB_NAME,
     waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0,
+    connectionLimit: parseInt(process.env.DB_POOL_SIZE || '25'),
+    queueLimit: 100,
+    connectTimeout: 10000,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 30000,
     timezone: '+00:00',
   });
 
@@ -229,6 +232,8 @@ export async function runMigrations() {
 
         raw_data JSON,
 
+        total_quantity INT NOT NULL DEFAULT 0,
+
         created_at DATETIME,
 
         updated_at DATETIME,
@@ -237,6 +242,11 @@ export async function runMigrations() {
                   ON UPDATE CURRENT_TIMESTAMP
       )
     `);
+
+    // Add total_quantity to existing tables that predate this migration
+    try {
+      await conn.query(`ALTER TABLE orders ADD COLUMN total_quantity INT NOT NULL DEFAULT 0`);
+    } catch { }
 
     // =========================================================
     // WEBHOOK LOGS
@@ -306,6 +316,22 @@ export async function runMigrations() {
         CREATE INDEX idx_customers_name
         ON customers(first_name, last_name)
       `);
+    } catch { }
+
+    try {
+      await conn.query(`CREATE INDEX idx_orders_order_number ON orders(order_number)`);
+    } catch { }
+
+    try {
+      await conn.query(`CREATE INDEX idx_orders_customer_email ON orders(customer_email)`);
+    } catch { }
+
+    try {
+      await conn.query(`CREATE INDEX idx_orders_customer_name ON orders(customer_first_name, customer_last_name)`);
+    } catch { }
+
+    try {
+      await conn.query(`CREATE INDEX idx_orders_total_quantity ON orders(total_quantity)`);
     } catch { }
 
     // =========================================================

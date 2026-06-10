@@ -13,10 +13,17 @@ const router = express.Router();
 
 const backgroundJobs = new Map();
 
+// In-memory cache for /meta — invalidated on sync
+let metaCache = null;
+let metaCacheAt = 0;
+const META_TTL_MS = 5 * 60 * 1000; // 5 minutes
+export function invalidateMetaCache() { metaCache = null; }
+
 // ─── Upsert a single Shopify order into MySQL ─────────────────────────────────
 export async function upsertOrder(order) {
   const c = order.customer || {};
   const a = order.shipping_address || {};
+  const totalQuantity = (order.line_items || []).reduce((s, li) => s + (li.quantity || 0), 0);
 
   await pool.query(
     `INSERT INTO orders (
@@ -25,8 +32,8 @@ export async function upsertOrder(order) {
       customer_id, customer_first_name, customer_last_name, customer_email, customer_phone,
       shipping_name, shipping_address1, shipping_address2, shipping_city,
       shipping_province, shipping_zip, shipping_country, shipping_phone,
-      line_items, shipping_lines, raw_data, created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      line_items, shipping_lines, raw_data, total_quantity, created_at, updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON DUPLICATE KEY UPDATE
       order_number        = VALUES(order_number),
       email               = VALUES(email),
@@ -52,6 +59,7 @@ export async function upsertOrder(order) {
       line_items          = VALUES(line_items),
       shipping_lines      = VALUES(shipping_lines),
       raw_data            = VALUES(raw_data),
+      total_quantity      = VALUES(total_quantity),
       updated_at          = VALUES(updated_at),
       synced_at           = CURRENT_TIMESTAMP`,
     [
@@ -80,10 +88,63 @@ export async function upsertOrder(order) {
       JSON.stringify(order.line_items || []),
       JSON.stringify(order.shipping_lines || []),
       JSON.stringify(order),
+      totalQuantity,
       order.created_at ? new Date(order.created_at) : null,
       order.updated_at ? new Date(order.updated_at) : null,
     ]
   );
+}
+
+// Batch upsert orders — single multi-row query instead of N round trips
+export async function batchUpsertOrders(orders, chunkSize = 50) {
+  if (!orders.length) return;
+  for (let i = 0; i < orders.length; i += chunkSize) {
+    const chunk = orders.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
+    const values = chunk.flatMap(order => {
+      const c = order.customer || {};
+      const a = order.shipping_address || {};
+      const qty = (order.line_items || []).reduce((s, li) => s + (li.quantity || 0), 0);
+      return [
+        order.id, order.order_number, order.email || null,
+        order.financial_status || null, order.fulfillment_status || null,
+        parseFloat(order.total_price || 0), order.currency || null,
+        order.tags || null, order.note || null,
+        c?.id || null, c.first_name || null, c.last_name || null, c.email || null, c.phone || null,
+        a.name || null, a.address1 || null, a.address2 || null, a.city || null,
+        a.province || null, a.zip || null, a.country || null, a.phone || null,
+        JSON.stringify(order.line_items || []), JSON.stringify(order.shipping_lines || []),
+        JSON.stringify(order), qty,
+        order.created_at ? new Date(order.created_at) : null,
+        order.updated_at ? new Date(order.updated_at) : null,
+      ];
+    });
+    await pool.query(
+      `INSERT INTO orders (
+        id, order_number, email, financial_status, fulfillment_status,
+        total_price, currency, tags, note,
+        customer_id, customer_first_name, customer_last_name, customer_email, customer_phone,
+        shipping_name, shipping_address1, shipping_address2, shipping_city,
+        shipping_province, shipping_zip, shipping_country, shipping_phone,
+        line_items, shipping_lines, raw_data, total_quantity, created_at, updated_at
+      ) VALUES ${placeholders}
+      ON DUPLICATE KEY UPDATE
+        order_number=VALUES(order_number), email=VALUES(email),
+        financial_status=VALUES(financial_status), fulfillment_status=VALUES(fulfillment_status),
+        total_price=VALUES(total_price), currency=VALUES(currency), tags=VALUES(tags), note=VALUES(note),
+        customer_id=VALUES(customer_id), customer_first_name=VALUES(customer_first_name),
+        customer_last_name=VALUES(customer_last_name), customer_email=VALUES(customer_email),
+        customer_phone=VALUES(customer_phone), shipping_name=VALUES(shipping_name),
+        shipping_address1=VALUES(shipping_address1), shipping_address2=VALUES(shipping_address2),
+        shipping_city=VALUES(shipping_city), shipping_province=VALUES(shipping_province),
+        shipping_zip=VALUES(shipping_zip), shipping_country=VALUES(shipping_country),
+        shipping_phone=VALUES(shipping_phone), line_items=VALUES(line_items),
+        shipping_lines=VALUES(shipping_lines), raw_data=VALUES(raw_data),
+        total_quantity=VALUES(total_quantity), updated_at=VALUES(updated_at),
+        synced_at=CURRENT_TIMESTAMP`,
+      values
+    );
+  }
 }
 
 export async function upsertProduct(product) {
@@ -230,6 +291,80 @@ export async function upsertCustomer(customer) {
   );
 }
 
+// Batch upsert products — single multi-row query per chunk
+export async function batchUpsertProducts(products, chunkSize = 50) {
+  if (!products.length) return;
+  for (let i = 0; i < products.length; i += chunkSize) {
+    const chunk = products.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
+    const values = chunk.flatMap(p => {
+      const img = p.image || {};
+      const v0 = p.variants?.[0] || {};
+      return [
+        p.id, p.title || null, p.handle || null, p.vendor || null, p.product_type || null,
+        p.seo?.title || null, p.seo?.description || null, p.status || null, p.tags || null,
+        parseFloat(v0.price || 0), parseFloat(v0.compare_at_price || 0),
+        parseInt(v0.inventory_quantity || 0), img.src || null,
+        JSON.stringify(p.variants || []), JSON.stringify(p.options || []),
+        JSON.stringify(p),
+        p.created_at ? new Date(p.created_at) : null,
+        p.updated_at ? new Date(p.updated_at) : null,
+      ];
+    });
+    await pool.query(
+      `INSERT INTO products (id,title,handle,vendor,product_type,seo_title,seo_description,
+        status,tags,price,compare_at_price,inventory_quantity,image,variants,options_data,raw_data,
+        created_at,updated_at) VALUES ${placeholders}
+      ON DUPLICATE KEY UPDATE
+        title=VALUES(title),handle=VALUES(handle),vendor=VALUES(vendor),
+        product_type=VALUES(product_type),seo_title=VALUES(seo_title),
+        seo_description=VALUES(seo_description),status=VALUES(status),tags=VALUES(tags),
+        price=VALUES(price),compare_at_price=VALUES(compare_at_price),
+        inventory_quantity=VALUES(inventory_quantity),image=VALUES(image),
+        variants=VALUES(variants),options_data=VALUES(options_data),raw_data=VALUES(raw_data),
+        updated_at=VALUES(updated_at),synced_at=CURRENT_TIMESTAMP`,
+      values
+    );
+  }
+}
+
+// Batch upsert customers
+export async function batchUpsertCustomers(customers, chunkSize = 50) {
+  if (!customers.length) return;
+  for (let i = 0; i < customers.length; i += chunkSize) {
+    const chunk = customers.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
+    const values = chunk.flatMap(c => {
+      const addr = c.default_address || {};
+      return [
+        c.id, c.first_name || null, c.last_name || null, c.email || null, c.phone || null,
+        c.accepts_marketing || false, c.verified_email || false,
+        c.orders_count || 0, parseFloat(c.total_spent || 0),
+        c.state || null, c.tags || null, c.currency || null,
+        addr.address1 || null, addr.city || null, addr.province || null,
+        addr.country || null, addr.zip || null,
+        JSON.stringify(c),
+        c.created_at ? new Date(c.created_at) : null,
+        c.updated_at ? new Date(c.updated_at) : null,
+      ];
+    });
+    await pool.query(
+      `INSERT INTO customers (id,first_name,last_name,email,phone,accepts_marketing,verified_email,
+        orders_count,total_spent,state,tags,currency,address1,city,province,country,zip,
+        raw_data,created_at,updated_at) VALUES ${placeholders}
+      ON DUPLICATE KEY UPDATE
+        first_name=VALUES(first_name),last_name=VALUES(last_name),email=VALUES(email),
+        phone=VALUES(phone),accepts_marketing=VALUES(accepts_marketing),
+        verified_email=VALUES(verified_email),orders_count=VALUES(orders_count),
+        total_spent=VALUES(total_spent),state=VALUES(state),tags=VALUES(tags),
+        currency=VALUES(currency),address1=VALUES(address1),city=VALUES(city),
+        province=VALUES(province),country=VALUES(country),zip=VALUES(zip),
+        raw_data=VALUES(raw_data),updated_at=VALUES(updated_at),synced_at=CURRENT_TIMESTAMP`,
+      values
+    );
+  }
+}
+
 // ─── Convert a DB row back to Shopify-shaped object ───────────────────────────
 function rowToOrder(row) {
   // Return the full raw_data if available, otherwise reconstruct
@@ -274,68 +409,54 @@ function rowToOrder(row) {
 // ─── GET /api/orders — serve from MySQL with pagination & filters ─────────────
 // ─── Get metadata for filters (tags, varieties, shipping) ──────────────────
 router.get('/meta', authenticateToken, async (req, res) => {
+  // Serve from cache if fresh (avoids 5 heavy JSON_TABLE queries on every page load)
+  if (metaCache && Date.now() - metaCacheAt < META_TTL_MS) {
+    res.setHeader('X-Cache', 'HIT');
+    return res.json(metaCache);
+  }
   try {
-    // 1. Unique Tags (Orders)
-    const [tagRows] = await pool.query('SELECT DISTINCT tags FROM orders WHERE tags IS NOT NULL AND tags != ""');
+    // Run all 5 queries in parallel
+    const [
+      [tagRows],
+      [productTagRows],
+      [varietyRows],
+      [shippingRows],
+      [paymentRows],
+      [fulfillRows],
+    ] = await Promise.all([
+      pool.query('SELECT DISTINCT tags FROM orders WHERE tags IS NOT NULL AND tags != ""'),
+      pool.query('SELECT DISTINCT tags FROM products WHERE tags IS NOT NULL AND tags != ""'),
+      pool.query(`SELECT DISTINCT jt.title FROM orders,
+        JSON_TABLE(COALESCE(orders.line_items,'[]'),'$[*]' COLUMNS(title VARCHAR(255) PATH '$.title')) jt
+        WHERE jt.title IS NOT NULL`),
+      pool.query(`SELECT DISTINCT jt.title FROM orders,
+        JSON_TABLE(COALESCE(orders.shipping_lines,'[]'),'$[*]' COLUMNS(title VARCHAR(255) PATH '$.title')) jt
+        WHERE jt.title IS NOT NULL`),
+      pool.query('SELECT DISTINCT financial_status FROM orders WHERE financial_status IS NOT NULL AND financial_status != ""'),
+      pool.query('SELECT DISTINCT COALESCE(fulfillment_status,"unfulfilled") as status FROM orders'),
+    ]);
+
     const orderTagsSet = new Set();
-    tagRows.forEach(row => {
-      row.tags.split(',').forEach(t => orderTagsSet.add(t.trim()));
-    });
+    tagRows.forEach(r => r.tags.split(',').forEach(t => orderTagsSet.add(t.trim())));
 
-    // 2. Unique Tags (Products)
-    const [productTagRows] = await pool.query('SELECT DISTINCT tags FROM products WHERE tags IS NOT NULL AND tags != ""');
     const productTagsSet = new Set();
-    productTagRows.forEach(row => {
-      if (row.tags) {
-        row.tags.split(',').forEach(t => productTagsSet.add(t.trim()));
-      }
-    });
+    productTagRows.forEach(r => r.tags && r.tags.split(',').forEach(t => productTagsSet.add(t.trim())));
 
-    const combinedTags = new Set([...orderTagsSet, ...productTagsSet]);
-
-    // 2. Unique Varieties (Line Item Titles)
-    const [varietyRows] = await pool.query(`
-      SELECT DISTINCT jt.title
-FROM orders,
-JSON_TABLE(
-  COALESCE(orders.line_items, '[]'),
-  '$[*]'
-  COLUMNS (
-    title VARCHAR(255) PATH '$.title'
-  )
-) as jt
-WHERE jt.title IS NOT NULL
-    `);
-
-    // 3. Unique Shipping Methods
-    const [shippingRows] = await pool.query(`
-      SELECT DISTINCT jt.title
-FROM orders,
-JSON_TABLE(
-  COALESCE(orders.shipping_lines, '[]'),
-  '$[*]'
-  COLUMNS (
-    title VARCHAR(255) PATH '$.title'
-  )
-) as jt
-WHERE jt.title IS NOT NULL
-    `);
-
-    // 4. Unique Payment Statuses
-    const [paymentRows] = await pool.query('SELECT DISTINCT financial_status FROM orders WHERE financial_status IS NOT NULL AND financial_status != ""');
-
-    // 5. Unique Fulfillment Statuses
-    const [fulfillRows] = await pool.query('SELECT DISTINCT COALESCE(fulfillment_status, "unfulfilled") as status FROM orders');
-
-    res.json({
-      tags: Array.from(combinedTags).sort(),
-      orderTags: Array.from(orderTagsSet).sort(),
-      productTags: Array.from(productTagsSet).sort(),
+    const result = {
+      tags: [...new Set([...orderTagsSet, ...productTagsSet])].sort(),
+      orderTags: [...orderTagsSet].sort(),
+      productTags: [...productTagsSet].sort(),
       varieties: varietyRows.map(r => r.title).sort(),
       shipping: shippingRows.map(r => r.title).sort(),
       payments: paymentRows.map(r => r.financial_status).sort(),
-      fulfillments: Array.from(new Set(fulfillRows.map(r => r.status))).sort()
-    });
+      fulfillments: [...new Set(fulfillRows.map(r => r.status))].sort(),
+    };
+
+    metaCache = result;
+    metaCacheAt = Date.now();
+
+    res.setHeader('X-Cache', 'MISS');
+    res.json(result);
   } catch (err) {
     console.error('Error fetching filter metadata:', err);
     res.status(500).json({ message: 'Failed to fetch filter metadata' });
@@ -2061,25 +2182,15 @@ router.post(
       // SAVE TO DB
       // ============================================
 
-      let synced = 0;
-
-      for (const order of orders) {
-
-        await upsertOrder(order);
-
-        synced++;
-
-        console.log(
-          `Synced ${synced}/${orders.length}`
-        );
-      }
+      await batchUpsertOrders(orders);
+      invalidateMetaCache();
 
       return res.json({
         success: true,
         skip,
         limit,
         fetched: orders.length,
-        synced,
+        synced: orders.length,
       });
 
     } catch (err) {
@@ -2111,84 +2222,27 @@ router.get('/', authenticateToken, async (req, res) => {
     const orderBy = validSortCols.includes(sort) ? sort : 'created_at';
     const orderDir = direction.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
-    // Calculate stats for the current filters (or overall)
-    const [statsRows] = await pool.query(
-      `
-      SELECT 
-        COUNT(*) as total,
-        COALESCE(SUM(total_price), 0) as total_revenue,
-        COUNT(
-          CASE
-            WHEN fulfillment_status = 'fulfilled'
-            THEN 1
-          END
-        ) as fulfilled_count,
-        COUNT(
-          CASE
-            WHEN fulfillment_status IS NULL
-            OR fulfillment_status = 'unfulfilled'
-            THEN 1
-          END
-        ) as pending_count,
-        COALESCE(
-          SUM(
-            (
-              SELECT COALESCE(
-                SUM(
-                  CAST(quantity AS UNSIGNED)
-                ),
-                0
-              )
-              FROM JSON_TABLE(
-                COALESCE(orders.line_items, '[]'),
-                '$[*]'
-                COLUMNS (
-                  quantity INT PATH '$.quantity'
-                )
-              ) jt
-            )
-          ),
-          0
-        ) as total_products,
-        COALESCE(
-          SUM(
-            CASE
-              WHEN orders.tags IS NOT NULL AND orders.tags != ''
-              THEN (
-                SELECT COALESCE(SUM(CAST(quantity AS UNSIGNED)), 0)
-                FROM JSON_TABLE(COALESCE(orders.line_items, '[]'), '$[*]' COLUMNS (quantity INT PATH '$.quantity')) jt
-              )
-              ELSE 0
-            END
-          ),
-          0
-        ) as tagged_products,
-        COALESCE(
-          SUM(
-            CASE
-              WHEN orders.tags IS NULL OR orders.tags = ''
-              THEN (
-                SELECT COALESCE(SUM(CAST(quantity AS UNSIGNED)), 0)
-                FROM JSON_TABLE(COALESCE(orders.line_items, '[]'), '$[*]' COLUMNS (quantity INT PATH '$.quantity')) jt
-              )
-              ELSE 0
-            END
-          ),
-          0
-        ) as untagged_products
-      FROM orders
-      ${whereSql}
-      `,
-      queryParams
-    );
+    // Stats + paginated data run in parallel — each uses its own pool connection
+    const [[statsRows], [rows]] = await Promise.all([
+      pool.query(
+        `SELECT
+          COUNT(*) as total,
+          COALESCE(SUM(total_price), 0) as total_revenue,
+          COUNT(CASE WHEN fulfillment_status = 'fulfilled' THEN 1 END) as fulfilled_count,
+          COUNT(CASE WHEN fulfillment_status IS NULL OR fulfillment_status = 'unfulfilled' THEN 1 END) as pending_count,
+          COALESCE(SUM(total_quantity), 0) as total_products,
+          COALESCE(SUM(CASE WHEN tags IS NOT NULL AND tags != '' THEN total_quantity ELSE 0 END), 0) as tagged_products,
+          COALESCE(SUM(CASE WHEN tags IS NULL OR tags = '' THEN total_quantity ELSE 0 END), 0) as untagged_products
+        FROM orders ${whereSql}`,
+        queryParams
+      ),
+      pool.query(
+        `SELECT orders.* FROM orders ${whereSql} ORDER BY ${orderBy} ${orderDir} LIMIT ? OFFSET ?`,
+        [...queryParams, limit, offset]
+      ),
+    ]);
     const stats = statsRows[0];
     const total = stats.total;
-
-    // Fetch paginated data
-    const [rows] = await pool.query(
-      `SELECT DISTINCT orders.* FROM orders ${whereSql} ORDER BY ${orderBy} ${orderDir} LIMIT ? OFFSET ?`,
-      [...queryParams, limit, offset]
-    );
 
     const orders = rows.map(rowToOrder);
 
@@ -2221,52 +2275,23 @@ router.get('/', authenticateToken, async (req, res) => {
 router.post('/sync-products', authenticateToken, async (req, res) => {
   try {
     const products = await fetchShopifyProducts();
-
-    let synced = 0;
-
-    for (const product of products) {
-      await upsertProduct(product);
-
-      synced++;
-    }
-
-    res.json({
-      message: `Synced ${synced} products from Shopify.`,
-      synced,
-    });
+    await batchUpsertProducts(products);
+    invalidateMetaCache();
+    res.json({ message: `Synced ${products.length} products from Shopify.`, synced: products.length });
   } catch (err) {
     console.error('Product sync error:', err);
-
-    res.status(500).json({
-      message: 'Product sync failed',
-      error: err.message,
-    });
+    res.status(500).json({ message: 'Product sync failed', error: err.message });
   }
 });
 
 router.post('/sync-customers', authenticateToken, async (req, res) => {
   try {
     const customers = await fetchShopifyCustomers();
-
-    let synced = 0;
-
-    for (const customer of customers) {
-      await upsertCustomer(customer);
-
-      synced++;
-    }
-
-    res.json({
-      message: `Synced ${synced} customers from Shopify.`,
-      synced,
-    });
+    await batchUpsertCustomers(customers);
+    res.json({ message: `Synced ${customers.length} customers from Shopify.`, synced: customers.length });
   } catch (err) {
     console.error('Customer sync error:', err);
-
-    res.status(500).json({
-      message: 'Customer sync failed',
-      error: err.message,
-    });
+    res.status(500).json({ message: 'Customer sync failed', error: err.message });
   }
 });
 
@@ -2294,54 +2319,21 @@ router.post('/sync', authenticateToken, async (req, res) => {
     // SYNC CUSTOMERS FIRST
     // ============================================
 
-    let syncedCustomers = 0;
-
-    for (const customer of shopifyCustomers) {
-
-      await upsertCustomer(customer);
-
-      syncedCustomers++;
-    }
-
-    // ============================================
-    // SYNC PRODUCTS
-    // ============================================
-
-    let syncedProducts = 0;
-
-    for (const product of shopifyProducts) {
-
-      await upsertProduct(product);
-
-      syncedProducts++;
-    }
-
-    // ============================================
-    // SYNC ORDERS LAST
-    // ============================================
-
-    let syncedOrders = 0;
-
-    for (const order of shopifyOrders) {
-
-      await upsertOrder(order);
-
-      syncedOrders++;
-    }
-
-    // ============================================
-    // RESPONSE
-    // ============================================
+    // Run customers + products in parallel, then orders (which may ref customers)
+    const [, ] = await Promise.all([
+      batchUpsertCustomers(shopifyCustomers),
+      batchUpsertProducts(shopifyProducts),
+    ]);
+    await batchUpsertOrders(shopifyOrders);
+    invalidateMetaCache();
 
     res.json({
       success: true,
-
       message: 'Shopify sync completed successfully.',
-
       synced: {
-        orders: syncedOrders,
-        products: syncedProducts,
-        customers: syncedCustomers,
+        orders: shopifyOrders.length,
+        products: shopifyProducts.length,
+        customers: shopifyCustomers.length,
       },
     });
   } catch (err) {
@@ -3123,6 +3115,85 @@ router.post('/s17-packingslips', authenticateToken, async (req, res) => {
     res.send(html);
   } catch (err) {
     console.error('s17-packingslips error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── POST /api/orders/royal-mail-s17 ─────────────────────────────────────────
+// Body: { orderIds, despatchDate }
+// Runs Royal Mail process (create/match + fetch individual labels) and returns
+// a multi-page S/17 integrated-label PDF — one A4 per order with the
+// 100mm×150mm shipping label embedded in the peelable bottom section.
+router.post('/royal-mail-s17', authenticateToken, async (req, res) => {
+  try {
+    const { createShipment, listOrders, getLabel, isConfigured } = await import('../services/royalMail.js');
+    const { buildS17Pdf } = await import('./preorders.js');
+
+    if (!isConfigured()) {
+      return res.status(503).json({ message: 'ROYAL_MAIL_OBA_TOKEN not set in .env' });
+    }
+
+    const { orderIds = [], despatchDate } = req.body;
+    if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
+
+    // Load Shopify orders from DB
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT id, order_number, raw_data FROM orders WHERE id IN (${placeholders})`,
+      orderIds
+    );
+    const shopifyOrders = rows
+      .map(r => (typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data))
+      .filter(Boolean);
+
+    // Match orders already in Click & Drop, create missing ones
+    const rmOrders = await listOrders(250);
+    const rmByRef = new Map();
+    rmOrders.forEach(o => {
+      const ref = String(o.orderReference || '').replace(/^#/, '');
+      rmByRef.set(ref, o);
+    });
+
+    // Collect individual label buffers keyed by Shopify order ID
+    const labelMap = new Map();
+
+    for (const order of shopifyOrders) {
+      const num = String(order.order_number).replace(/^#/, '');
+      const existing = rmByRef.get(num);
+      try {
+        let labelBuf = null;
+        if (existing?.orderIdentifier) {
+          // Already in Click & Drop — fetch its label
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              labelBuf = await getLabel(existing.orderIdentifier);
+              if (labelBuf) break;
+            } catch { await new Promise(r => setTimeout(r, 1500)); }
+          }
+        } else {
+          // Create order + postage in Click & Drop; get inline label
+          const r = await createShipment(order, despatchDate);
+          labelBuf = r.labelBuffer;
+        }
+        if (labelBuf) labelMap.set(String(order.id), labelBuf);
+      } catch (err) {
+        if (err.response?.status === 401 || err.response?.status === 403) {
+          return res.status(403).json({ needsTokenSetup: true, message: 'Royal Mail token auth failed.' });
+        }
+        console.error(`[S17] label failed for #${order.order_number}:`, err.message);
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    const pdfBuffer = await buildS17Pdf(shopifyOrders, labelMap);
+    const date = despatchDate || new Date().toISOString().slice(0, 10);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="s17_packing_slips_${date}.pdf"`);
+    res.setHeader('X-Labels-Embedded', String(labelMap.size));
+    res.send(Buffer.from(pdfBuffer));
+  } catch (err) {
+    console.error('royal-mail-s17 error:', err);
     res.status(500).json({ message: err.message });
   }
 });
