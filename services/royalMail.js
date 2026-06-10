@@ -2,7 +2,12 @@ import axios from 'axios';
 import { PDFDocument } from 'pdf-lib';
 
 const BASE = process.env.ROYAL_MAIL_API_URL || 'https://api.parcel.royalmail.com/api/v1';
-const SERVICE_CODE = 'TPS48'; // Royal Mail Tracked 48 Parcel
+// Royal Mail Click & Drop service codes (affix "48" or "24" to the base code):
+//   TPS48 = Tracked 48 Signature / No Signature  ← used here
+//   TPS24 = Tracked 24 Signature / No Signature
+//   TSS   = Tracked Returns 48
+//   TSN   = Tracked Returns 24
+const SERVICE_CODE = 'TPS48';
 
 function authHeaders() {
   return {
@@ -25,51 +30,76 @@ function toGB(countryCode, countryName) {
   return 'GB';
 }
 
+// Strip undefined/null/empty-string keys so RM API doesn't reject the payload
+function compact(obj) {
+  return Object.fromEntries(
+    Object.entries(obj).filter(([, v]) => v !== null && v !== undefined && v !== '')
+  );
+}
+
 function buildPayload(order, despatchDate) {
   const a = order.shipping_address || {};
   const c = order.customer || {};
   const lineItems = order.line_items || [];
-  const weightG = calcWeightG(lineItems);
+  const weightG   = calcWeightG(lineItems);
 
-  return {
-    orderReference: `#${order.order_number}`,
-    recipient: {
-      address: {
-        fullName: a.name || `${c.first_name || ''} ${c.last_name || ''}`.trim() || 'Unknown',
-        companyName: a.company || '',
-        addressLine1: a.address1 || '',
-        addressLine2: a.address2 || '',
-        city: a.city || '',
-        county: a.province || '',
-        postcode: a.zip || '',
-        countryCode: toGB(a.country_code, a.country),
-      },
-      phoneNumber: (a.phone || c.phone || '').replace(/\s/g, ''),
-      emailAddress: c.email || order.email || '',
-    },
+  // Royal Mail requires orderDate in strict UTC ISO-8601 format
+  const rawDate  = order.created_at ? new Date(order.created_at) : new Date();
+  const orderDate = rawDate.toISOString();
+
+  // Build address — omit optional fields when empty
+  const address = compact({
+    fullName:     a.name || `${c.first_name || ''} ${c.last_name || ''}`.trim() || 'Unknown',
+    companyName:  a.company  || undefined,
+    addressLine1: a.address1 || '',
+    addressLine2: a.address2 || undefined,
+    city:         a.city     || '',
+    county:       a.province || undefined,
+    postcode:     a.zip      || '',
+    countryCode:  toGB(a.country_code, a.country),
+  });
+
+  const phone = (a.phone || c.phone || '').replace(/\s/g, '');
+  const email = c.email || order.email || '';
+
+  const recipient = {
+    address,
+    ...(phone ? { phoneNumber: phone } : {}),
+    ...(email ? { emailAddress: email } : {}),
+  };
+
+  const payload = {
+    orderReference:       String(order.order_number),
+    recipient,
     packages: [
       {
-        weightInGrams: weightG,
+        weightInGrams:           weightG,
         packageFormatIdentifier: 'parcel',
-        contents: lineItems.map(li => ({
-          name: li.title || 'Item',
-          SKU: li.sku || '',
-          quantity: li.quantity || 1,
-          unitValue: parseFloat(li.price || 0),
-          unitWeightInGrams: li.grams || 999,
-        })),
       },
     ],
-    orderDate: order.created_at || new Date().toISOString(),
-    plannedDespatchDate: despatchDate || new Date().toISOString().slice(0, 10),
-    specialInstructions: order.note || '',
-    subtotal: parseFloat(order.subtotal_price || order.total_price || 0),
+    orderDate,
+    // plannedDespatchDate omitted — account has "Allow future dated orders" disabled
+    subtotal:            parseFloat(order.subtotal_price || order.total_price || 0),
     shippingCostCharged: 0,
-    total: parseFloat(order.total_price || 0),
-    currencyCode: order.currency || 'GBP',
-    label: { includeLabelInResponse: false },
-    serviceCode: SERVICE_CODE,
+    total:               parseFloat(order.total_price || 0),
+    currencyCode:        order.currency || 'GBP',
+    serviceCode:         SERVICE_CODE,
+    // postageDetails applies TPS48 postage at creation time → assigns tracking number immediately
+    postageDetails: {
+      serviceCode: SERVICE_CODE,
+    },
+    // includeLabelInResponse returns the label as base64 directly in the creation response
+    label: {
+      includeLabelInResponse: true,
+    },
   };
+
+  // Only include notes when non-empty; strip non-ASCII to avoid RM parser rejections
+  if (order.note) {
+    payload.specialInstructions = order.note.replace(/[^\x00-\x7F]/g, '-');
+  }
+
+  return payload;
 }
 
 /**
@@ -78,15 +108,57 @@ function buildPayload(order, despatchDate) {
  */
 export async function createShipment(order, despatchDate) {
   const payload = buildPayload(order, despatchDate);
-  const { data } = await axios.post(`${BASE}/orders`, payload, {
-    headers: authHeaders(),
-  });
+  // API requires { items: [...] } wrapper — raw array returns 400
+  const body = JSON.stringify({ items: [payload] });
+
+  console.log('[RM] POST /orders payload:', body);
+
+  let resp;
+  try {
+    resp = await axios.post(`${BASE}/orders`, body, {
+      headers: {
+        ...authHeaders(),
+        'Content-Type': 'application/json',
+      },
+    });
+  } catch (err) {
+    const status = err.response?.status;
+    const detail = err.response?.data;
+    console.error(`[RM] POST /orders failed — HTTP ${status}:`, JSON.stringify(detail));
+    throw err;
+  }
+
+  const data = resp.data;
+  console.log('[RM] POST /orders result:', JSON.stringify(data));
+
+  // Handle application-level failures reported in failedOrders
+  if (data.failedOrders?.length > 0) {
+    const errs = data.failedOrders[0].errors?.map(e => e.errorMessage).join('; ') || '';
+    // Service contract error means the Royal Mail account hasn't enabled this service
+    if (errs.toLowerCase().includes('service contract') || errs.toLowerCase().includes('does not exist')) {
+      throw new Error(`Royal Mail service '${SERVICE_CODE}' is not enabled on this account. Contact your Royal Mail account manager to enable Tracked 48 (TPS48). ${errs}`);
+    }
+    throw new Error(`Royal Mail order creation failed: ${errs}`);
+  }
+
+  const result = data.createdOrders?.[0] || data;
+
+  // Extract inline label returned when label.includeLabelInResponse is true
+  // RM API may return label as: result.label (string), result.label.pdf (string), or result.labelPdf
+  let labelBuffer = null;
+  const rawLabel = result.label ?? result.labelPdf ?? null;
+  if (rawLabel) {
+    const base64 = typeof rawLabel === 'string' ? rawLabel : (rawLabel.pdf ?? rawLabel.labelPdf ?? null);
+    if (base64) labelBuffer = Buffer.from(base64, 'base64');
+  }
+
   return {
-    orderIdentifier: data.orderIdentifier,
-    trackingNumber: data.trackingNumber || null,
-    status: data.status || 'created',
+    orderIdentifier: result.orderIdentifier,
+    trackingNumber: result.trackingNumber || null,
+    status: result.orderStatus || 'created',
     shopifyOrderId: order.id,
     orderNumber: order.order_number,
+    labelBuffer,
   };
 }
 
@@ -95,7 +167,8 @@ export async function createShipment(order, despatchDate) {
  * Returns a Buffer containing the PDF bytes.
  */
 export async function getLabel(orderIdentifier) {
-  const { data } = await axios.get(`${BASE}/orders/${orderIdentifier}/label`, {
+  // documentType=1 is required by the Click & Drop API v1
+  const { data } = await axios.get(`${BASE}/orders/${orderIdentifier}/label?documentType=1`, {
     headers: { ...authHeaders(), Accept: 'application/pdf' },
     responseType: 'arraybuffer',
   });
@@ -122,30 +195,68 @@ export async function mergeLabels(pdfBuffers) {
 }
 
 /**
- * Create a manifest in Royal Mail (manifests all orders in ready-to-manifest state).
- * Returns the manifest response data.
+ * Create a manifest in Royal Mail Click & Drop.
+ * Pass orderIdentifiers array to manifest specific orders, or omit to manifest all eligible orders.
+ * Returns the manifest response data: { manifests: [guid, ...] }
  */
-export async function createManifest() {
-  const { data } = await axios.post(`${BASE}/manifests`, {}, {
+export async function createManifest(orderIdentifiers) {
+  // carrierName is required by the API even though not in Swagger schema.
+  // This account uses 'Royal Mail OBA' (not 'Royal Mail').
+  const base = { carrierName: 'Royal Mail OBA' };
+  const body = orderIdentifiers?.length
+    ? { ...base, orderIdentifiers: orderIdentifiers.map(Number) }
+    : { ...base, allOrders: true };
+  const { data } = await axios.post(`${BASE}/manifests`, body, {
     headers: authHeaders(),
   });
   return data;
 }
 
 /**
- * Fetch the manifest label/PDF for a given manifestIdentifier.
- * Returns a Buffer (PDF) or null if the endpoint is not supported.
+ * Poll GET /manifests/{guid} until completed, then return the base64-encoded PDF as a Buffer.
+ * Returns null if the manifest never completes or has no PDF.
  */
-export async function getManifestLabel(manifestIdentifier) {
-  try {
-    const { data } = await axios.get(`${BASE}/manifests/${manifestIdentifier}/label`, {
-      headers: { ...authHeaders(), Accept: 'application/pdf' },
-      responseType: 'arraybuffer',
-    });
-    return Buffer.from(data);
-  } catch {
-    return null;
+export async function getManifestLabel(manifestGuid) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const { data } = await axios.get(`${BASE}/manifests/${manifestGuid}`, {
+        headers: authHeaders(),
+      });
+      if (data.manifestStatus === 'Completed' || data.documentStatus === 'Completed') {
+        if (data.pdf) return Buffer.from(data.pdf, 'base64');
+        return null;
+      }
+      if (data.manifestStatus === 'Failed') return null;
+    } catch {
+      // retry
+    }
   }
+  return null;
+}
+
+/**
+ * List all orders in Click & Drop, following pagination (max pageSize=100).
+ * Returns a flat array of RM order objects.
+ * Each object has: orderIdentifier, orderReference, trackingNumber, etc.
+ */
+export async function listOrders(maxResults = 500) {
+  const results = [];
+  let continuationToken = null;
+  const pageSize = 100; // API maximum
+
+  do {
+    const params = { pageSize, ...(continuationToken ? { continuationToken } : {}) };
+    const { data } = await axios.get(`${BASE}/orders`, {
+      headers: authHeaders(),
+      params,
+    });
+    const page = Array.isArray(data) ? data : (data.orders || []);
+    results.push(...page);
+    continuationToken = Array.isArray(data) ? null : (data.continuationToken || null);
+  } while (continuationToken && results.length < maxResults);
+
+  return results;
 }
 
 export function isConfigured() {

@@ -2886,6 +2886,133 @@ router.post('/royal-mail-labels', authenticateToken, async (req, res) => {
   }
 });
 
+// ─── POST /api/orders/royal-mail-auto-process ────────────────────────────────
+// Body: { orderIds: [], despatchDate: 'YYYY-MM-DD' }
+// Flow:
+//   1. Fetch all Click & Drop orders; match to our Shopify orders by orderReference.
+//   2. For any order NOT yet in Click & Drop: create with postageDetails+label → get inline label.
+//   3. Download labels for matched (existing) orders via GET /orders/{id}/label.
+//   4. Return merged PDF; or JSON if no labels ready yet.
+router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
+  try {
+    const { createShipment, listOrders, getLabel, mergeLabels, isConfigured } = await import('../services/royalMail.js');
+
+    if (!isConfigured()) {
+      return res.status(503).json({ message: 'ROYAL_MAIL_OBA_TOKEN not set in .env' });
+    }
+
+    const { orderIds = [], despatchDate } = req.body;
+    if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
+
+    // Load our Shopify orders from DB
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT id, order_number, raw_data FROM orders WHERE id IN (${placeholders})`,
+      orderIds
+    );
+    const shopifyOrders = rows
+      .map(r => (typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data))
+      .filter(Boolean);
+
+    // Phase 1 — fetch all existing Click & Drop orders and match by order_number
+    const rmOrders = await listOrders(250);
+    const rmByRef = new Map();
+    rmOrders.forEach(o => {
+      const ref = String(o.orderReference || '').replace(/^#/, '');
+      rmByRef.set(ref, o);
+    });
+
+    const toCreate = [];
+    const matchedIdentifiers = []; // already in Click & Drop with tracking
+
+    for (const order of shopifyOrders) {
+      const num = String(order.order_number).replace(/^#/, '');
+      const existing = rmByRef.get(num);
+      if (existing?.trackingNumber) {
+        // Already imported + postage applied — use existing identifier
+        matchedIdentifiers.push(existing.orderIdentifier);
+      } else if (existing && !existing.trackingNumber) {
+        // In Click & Drop but no postage yet — include identifier, label attempt will fail gracefully
+        matchedIdentifiers.push(existing.orderIdentifier);
+      } else {
+        // Not in Click & Drop at all — need to create
+        toCreate.push(order);
+      }
+    }
+
+    // Phase 2 — create only orders not already in Click & Drop
+    // createShipment now applies postage + returns inline label in response (no separate download needed)
+    const createdIdentifiers = [];
+    const createdLabels = []; // inline labels from creation response
+    const failedOrders = [];
+    for (const order of toCreate) {
+      try {
+        const r = await createShipment(order, despatchDate);
+        createdIdentifiers.push(r.orderIdentifier);
+        if (r.labelBuffer) createdLabels.push(r.labelBuffer);
+      } catch (err) {
+        const raw = err.response?.data;
+        const msg = raw?.message || JSON.stringify(raw) || err.message;
+        if (err.response?.status === 401 || err.response?.status === 403) {
+          return res.status(403).json({ needsTokenSetup: true, message: 'Royal Mail token auth failed.' });
+        }
+        failedOrders.push({ orderNumber: order.order_number, error: msg });
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    const allIdentifiers = [...matchedIdentifiers, ...createdIdentifiers];
+    if (!allIdentifiers.length) {
+      return res.status(502).json({
+        message: 'No orders could be matched or created in Click & Drop.',
+        errors: failedOrders.map(r => `#${r.orderNumber}: ${r.error}`),
+      });
+    }
+
+    // Phase 3 — download labels for matched (existing) orders; new orders already have inline labels
+    const pdfBuffers = [...createdLabels]; // inline labels from new orders first
+    for (const id of matchedIdentifiers) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const buf = await getLabel(id);
+          if (buf) { pdfBuffers.push(buf); break; }
+        } catch {
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    const date = despatchDate || new Date().toISOString().slice(0, 10);
+
+    if (!pdfBuffers.length) {
+      // Orders are in Click & Drop but labels not ready (no postage applied yet)
+      return res.status(200).json({
+        ordersCreated: true,
+        identifiers: allIdentifiers,
+        labelsReady: false,
+        matched: matchedIdentifiers.length,
+        created: createdIdentifiers.length,
+        message: `${allIdentifiers.length} order(s) found in Click & Drop but labels are not ready — postage has not been applied yet. Open Click & Drop to apply postage, then come back to download labels.`,
+        failed: failedOrders.map(r => r.orderNumber),
+      });
+    }
+
+    const mergedPdf = await mergeLabels(pdfBuffers);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="royal_mail_labels_${date}.pdf"`);
+    res.setHeader('X-Shipment-Count', String(pdfBuffers.length));
+    res.setHeader('X-Order-Identifiers', allIdentifiers.join(','));
+    if (failedOrders.length) {
+      res.setHeader('X-Failed-Orders', failedOrders.map(r => r.orderNumber).join(','));
+    }
+    res.send(mergedPdf);
+  } catch (err) {
+    console.error('royal-mail-auto-process error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // POST /api/orders/royal-mail-manifest
 // Manifests all ready orders in Royal Mail Click & Drop; returns manifest PDF if available.
 router.post('/royal-mail-manifest', authenticateToken, async (req, res) => {
@@ -2896,24 +3023,45 @@ router.post('/royal-mail-manifest', authenticateToken, async (req, res) => {
       return res.status(503).json({ message: 'Royal Mail API token not configured.' });
     }
 
-    const manifest = await createManifest();
+    // Accept specific order identifiers from the frontend (created in the process step)
+    const { orderIdentifiers } = req.body || {};
+    const manifest = await createManifest(orderIdentifiers?.length ? orderIdentifiers : undefined);
 
-    if (manifest.manifestIdentifier) {
-      await new Promise(r => setTimeout(r, 1500));
-      const pdfBuf = await getManifestLabel(manifest.manifestIdentifier);
+    // The API returns { manifestNumber, documentPdf: base64 } directly — no polling needed
+    if (manifest.documentPdf) {
+      const pdfBuf = Buffer.from(manifest.documentPdf, 'base64');
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="manifest_${manifest.manifestNumber || 'rm'}.pdf"`);
+      res.setHeader('X-Manifest-Number', String(manifest.manifestNumber || ''));
+      return res.send(pdfBuf);
+    }
+
+    // Fallback: older GUID-based response (poll for PDF)
+    const manifestGuid = manifest.manifests?.[0];
+    if (manifestGuid) {
+      const pdfBuf = await getManifestLabel(manifestGuid);
       if (pdfBuf) {
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename="manifest_${manifest.manifestIdentifier}.pdf"`);
-        res.setHeader('X-Manifest-Id', manifest.manifestIdentifier);
+        res.setHeader('Content-Disposition', `attachment; filename="manifest_${manifestGuid}.pdf"`);
+        res.setHeader('X-Manifest-Id', manifestGuid);
         return res.send(pdfBuf);
       }
     }
 
     res.json(manifest);
   } catch (err) {
-    const apiMsg = err.response?.data?.message || JSON.stringify(err.response?.data);
-    console.error('royal-mail-manifest error:', apiMsg || err.message);
-    res.status(500).json({ message: apiMsg || err.message });
+    const apiData = err.response?.data;
+    const errCodes = apiData?.errors?.map(e => e.code) || [];
+    // NO_ELIGIBLE_ORDERS — all orders already manifested, or none in printed state
+    if (errCodes.includes('NO_ELIGIBLE_ORDERS') || errCodes.includes('CARRIER_NOT_FOUND')) {
+      return res.status(400).json({
+        message: "No orders are ready to manifest — all of today's orders may already be manifested, or none have had postage applied yet.",
+        code: 'NO_ELIGIBLE_ORDERS',
+      });
+    }
+    const apiMsg = apiData?.message || apiData?.errors?.map(e => e.description).join('; ') || err.message;
+    console.error('royal-mail-manifest error:', apiMsg);
+    res.status(500).json({ message: apiMsg });
   }
 });
 
@@ -3097,6 +3245,137 @@ router.post('/dpd-create', authenticateToken, async (req, res) => {
     res.json({ results });
   } catch (err) {
     console.error('dpd-create error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── POST /api/orders/royal-mail-fetch-identifiers ───────────────────────────
+// Body: { orderNumbers: [] }   (Shopify order numbers, e.g. [52846, 52848])
+// Calls GET /api/v1/orders, matches by orderReference, returns RM identifiers.
+router.post('/royal-mail-fetch-identifiers', authenticateToken, async (req, res) => {
+  try {
+    const { orderNumbers = [] } = req.body;
+    if (!orderNumbers.length) return res.status(400).json({ message: 'orderNumbers required' });
+
+    const { listOrders } = await import('../services/royalMail.js');
+    const rmOrders = await listOrders();
+
+    // Match by orderReference — we send order_number (e.g. 52846), RM may store it as-is or as "#52846"
+    const numSet = new Set(orderNumbers.map(n => String(n).replace(/^#/, '')));
+    const matched = rmOrders.filter(o => {
+      const ref = String(o.orderReference || '').replace(/^#/, '');
+      return numSet.has(ref);
+    });
+
+    res.json({
+      total: rmOrders.length,
+      matched: matched.map(o => ({
+        orderIdentifier: o.orderIdentifier,
+        orderReference:  o.orderReference,
+        status:          o.status,
+      })),
+    });
+  } catch (err) {
+    console.error('royal-mail-fetch-identifiers error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── POST /api/orders/seed-test-order ────────────────────────────────────────
+// Inserts a fake Royal Mail test order for end-to-end flow testing.
+router.post('/seed-test-order', authenticateToken, async (req, res) => {
+  const fakeOrder = {
+    id: 999999999,
+    order_number: 999001,
+    email: 'test.customer@example.com',
+    financial_status: 'paid',
+    fulfillment_status: null,
+    total_price: '15.97',
+    subtotal_price: '13.97',
+    currency: 'GBP',
+    tags: 'royal-mail-parcel',
+    note: 'TEST ORDER — delete after Royal Mail flow testing',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    customer: {
+      id: 999999,
+      first_name: 'Test',
+      last_name: 'Customer',
+      email: 'test.customer@example.com',
+      phone: '+447700900000',
+    },
+    shipping_address: {
+      name: 'Test Customer',
+      address1: '10 Downing Street',
+      address2: '',
+      city: 'London',
+      province: 'England',
+      zip: 'SW1A 2AA',
+      country: 'United Kingdom',
+      country_code: 'GB',
+      phone: '+447700900000',
+    },
+    billing_address: {
+      name: 'Test Customer',
+      address1: '10 Downing Street',
+      city: 'London',
+      zip: 'SW1A 2AA',
+      country: 'United Kingdom',
+    },
+    line_items: [
+      {
+        id: 9999991,
+        title: 'Numex Twilight Chilli Plant',
+        variant_title: '9cm Pot',
+        sku: 'PLANT-TEST-001',
+        quantity: 2,
+        price: '5.99',
+        grams: 350,
+        product_id: 9999991,
+      },
+      {
+        id: 9999992,
+        title: 'Carolina Reaper Chilli Plant',
+        variant_title: '9cm Pot',
+        sku: 'PLANT-TEST-002',
+        quantity: 1,
+        price: '3.99',
+        grams: 320,
+        product_id: 9999992,
+      },
+    ],
+    shipping_lines: [
+      {
+        title: 'Royal Mail Tracked 48',
+        price: '2.00',
+        code: 'royal-mail-tracked-48',
+      },
+    ],
+    order_status_url: 'https://example.com/orders/test001',
+  };
+
+  try {
+    await upsertOrder(fakeOrder);
+    res.json({
+      success: true,
+      message: 'Test order inserted — it will appear in the orders list as #999001',
+      orderId: fakeOrder.id,
+      orderNumber: fakeOrder.order_number,
+    });
+  } catch (err) {
+    console.error('seed-test-order error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── DELETE /api/orders/seed-test-order ──────────────────────────────────────
+// Removes the fake test order inserted by the route above.
+router.delete('/seed-test-order', authenticateToken, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM orders WHERE id = ?', [999999999]);
+    res.json({ success: true, message: 'Test order removed' });
+  } catch (err) {
+    console.error('seed-test-order delete error:', err);
     res.status(500).json({ message: err.message });
   }
 });

@@ -311,7 +311,7 @@ export function buildShippingCsv(orders, carrier) {
       'Order ID', 'E-mail', 'Shipping: first name', 'Shipping: last name',
       'Shipping Address', 'Shipping: address2', 'Shipping: city',
       'Shipping: state', 'Shipping: country', 'Shipping: zipcode',
-      'Notes', 'Phone', 'Weight in g', 'Weight', 'Package Size', 'Service Code',
+      'Notes', 'Phone', 'Weight in g (to convert)', 'Weight', 'Package Size', 'Service Code',
     ].join(',');
 
     const rows = orders.map(o => {
