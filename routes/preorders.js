@@ -474,31 +474,78 @@ export function buildOrderPackingSlipHtml(orders) {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Order Packing Slips</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: Arial, sans-serif; background: #fff; font-size: 10pt; }
-  @page { size: A4 portrait; margin: 15mm; }
-  .order-page { page-break-after: always; min-height: 250mm; }
-  .header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 5mm; }
+  body { font-family: Arial, sans-serif; background: #f0f0f0; font-size: 10pt; }
+
+  /* Screen: centre each slip as a card */
+  .order-page {
+    background: #fff;
+    width: 100%;
+    max-width: 680px;
+    margin: 20px auto;
+    padding: 15mm;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  }
+
+  /* Print: full A4, no card styling */
+  @media print {
+    body { background: #fff; }
+    .order-page {
+      box-shadow: none;
+      border-radius: 0;
+      margin: 0;
+      padding: 0;
+      max-width: 100%;
+      width: 100%;
+      page-break-after: always;
+      min-height: 250mm;
+    }
+    @page { size: A4 portrait; margin: 15mm; }
+  }
+
+  .header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 5mm; flex-wrap: wrap; gap: 4px; }
   .store-name { font-size: 13pt; font-weight: bold; }
   .order-meta { text-align: right; font-size: 9pt; color: #444; }
   hr { border: none; border-top: 1px solid #000; margin: 4mm 0; }
-  .address-row { display: flex; gap: 10mm; margin-bottom: 5mm; }
-  .address-block { flex: 1; }
+  .address-row { display: flex; gap: 10mm; margin-bottom: 5mm; flex-wrap: wrap; }
+  .address-block { flex: 1; min-width: 140px; }
   .address-label { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2mm; }
   .items-table { width: 100%; border-collapse: collapse; margin-bottom: 5mm; }
   .items-table th { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; padding: 2mm 0; }
   .items-table td { padding: 1.5mm 0; vertical-align: top; }
   .item-name { width: 80%; }
-  .item-qty { width: 20%; text-align: right; }
+  .item-qty { width: 20%; text-align: right; white-space: nowrap; }
   .passport-section { font-size: 9pt; line-height: 1.8; margin-bottom: 4mm; }
   .footer { font-size: 9pt; text-align: center; color: #333; line-height: 1.8; }
+
+  /* Print button — hidden when printing */
+  .print-bar {
+    position: fixed; top: 0; left: 0; right: 0;
+    background: #1e293b; color: #fff;
+    padding: 10px 20px;
+    display: flex; align-items: center; justify-content: space-between;
+    font-family: Arial, sans-serif; font-size: 13px;
+    z-index: 100;
+  }
+  .print-bar button {
+    background: #3b82f6; color: #fff; border: none; border-radius: 4px;
+    padding: 7px 18px; font-size: 13px; cursor: pointer;
+  }
+  .print-bar button:hover { background: #2563eb; }
+  body { padding-top: 48px; }
+  @media print { .print-bar { display: none; } body { padding-top: 0; } }
 </style>
 </head>
 <body>
+<div class="print-bar">
+  <span>Order Packing Slips — ${orders.length} order${orders.length !== 1 ? 's' : ''}</span>
+  <button onclick="window.print()">🖨️ Print</button>
+</div>
 ${pages}
-<script>window.onload = () => window.print();</script>
 </body>
 </html>`;
 }
