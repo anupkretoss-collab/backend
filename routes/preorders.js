@@ -511,15 +511,15 @@ export function buildOrderPackingSlipHtml(orders) {
 
   .header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 5mm; flex-wrap: wrap; gap: 4px; }
   .store-name { font-size: 14pt; font-weight: bold; color: #000; }
-  .order-meta { text-align: right; font-size: 9pt; color: #5b68a3; line-height: 1.6; }
-  hr { border: none; border-top: 1px solid #ccc; margin: 4mm 0; }
+  .order-meta { text-align: right; font-size: 9pt; color: #000; line-height: 1.6; }
+  hr { border: none; border-top: 2px solid #000; margin: 4mm 0; }
   .address-row { display: flex; gap: 10mm; margin-bottom: 2mm; flex-wrap: wrap; }
   .address-block { flex: 1; min-width: 140px; }
   .address-label { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2mm; color: #000; }
-  .address-text { font-size: 9.5pt; color: #3a4fa6; line-height: 1.7; }
+  .address-text { font-size: 9.5pt; line-height: 1.7; }
   .items-table { width: 100%; border-collapse: collapse; margin-bottom: 3mm; }
   .items-table th { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; padding: 2mm 0; color: #000; border-bottom: 1px solid #ccc; }
-  .items-table td { padding: 1.8mm 0; vertical-align: top; font-size: 9.5pt; color: #3a4fa6; }
+  .items-table td { padding: 1.8mm 0; vertical-align: top; font-size: 9.5pt; }
   .item-name { width: 80%; }
   .item-qty { width: 20%; text-align: right; white-space: nowrap; }
   .passport-section { font-size: 9pt; line-height: 1.8; margin-bottom: 4mm; color: #333; }
