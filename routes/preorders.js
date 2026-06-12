@@ -390,8 +390,8 @@ export function buildShippingCsv(orders, carrier) {
 
 export function buildOrderPackingSlipHtml(orders) {
   const storeName = process.env.STORE_NAME || 'South Devon Chilli Farm';
-  const storeAddr = process.env.STORE_ADDRESS || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
-  const storeEmail = process.env.STORE_EMAIL || 'orders@sdcf.co.uk';
+  const storeAddr = process.env.STORE_ADDRESS || 'South Devon Chilli Farm, Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX, United Kingdom';
+  const storeEmail = process.env.STORE_EMAIL || 'orders@southdevonchillifarm.co.uk';
   const storeWebsite = process.env.STORE_WEBSITE || 'southdevonchillifarm.co.uk';
   const storeEori = process.env.STORE_EORI || 'GB885490630200';
 
@@ -432,16 +432,15 @@ export function buildOrderPackingSlipHtml(orders) {
       <div>${orderDate}</div>
     </div>
   </div>
-  <hr>
   <div class="address-row">
     <div class="address-block">
       <div class="address-label">SHIP TO</div>
-      <div>${fmtAddr(sa)}</div>
-      ${phone ? `<div style="margin-top:3mm">${phone}</div>` : ''}
+      <div class="address-text">${fmtAddr(sa)}</div>
+      ${phone ? `<div class="address-text">${phone}</div>` : ''}
     </div>
     <div class="address-block">
       <div class="address-label">BILL TO</div>
-      <div>${fmtAddr(ba)}</div>
+      <div class="address-text">${fmtAddr(ba)}</div>
     </div>
   </div>
   <hr>
@@ -453,20 +452,20 @@ export function buildOrderPackingSlipHtml(orders) {
   </table>
   <hr>
   <div class="passport-section">
-    <div>UK Plant Passport</div>
+    <strong>UK Plant Passport</strong>
     <div>A Variety: see packet/label</div>
-    <div>B 100561 &nbsp;&nbsp; C &nbsp;&nbsp; D GB &nbsp;&nbsp; E</div>
+    <div>B 100561</div> 
+    <div>C</div> 
+    <div>D GB</div>
+    <div>E</div>
   </div>
-  <hr>
   <div class="footer">
     <div>Thank you for shopping with us!</div>
-    <br>
     <br>
     <div>${storeName}</div>
     <div>${storeAddr}</div>
     <div>${storeEmail}</div>
     <div>${storeWebsite}</div>
-    <br>
     <br>
     <div>EORI No: ${storeEori}</div>
   </div>
@@ -511,19 +510,20 @@ export function buildOrderPackingSlipHtml(orders) {
   }
 
   .header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 5mm; flex-wrap: wrap; gap: 4px; }
-  .store-name { font-size: 13pt; font-weight: bold; }
-  .order-meta { text-align: right; font-size: 9pt; color: #444; }
-  hr { border: none; border-top: 1px solid #000; margin: 4mm 0; }
-  .address-row { display: flex; gap: 10mm; margin-bottom: 5mm; flex-wrap: wrap; }
+  .store-name { font-size: 14pt; font-weight: bold; color: #000; }
+  .order-meta { text-align: right; font-size: 9pt; color: #5b68a3; line-height: 1.6; }
+  hr { border: none; border-top: 1px solid #ccc; margin: 4mm 0; }
+  .address-row { display: flex; gap: 10mm; margin-bottom: 2mm; flex-wrap: wrap; }
   .address-block { flex: 1; min-width: 140px; }
-  .address-label { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2mm; }
-  .items-table { width: 100%; border-collapse: collapse; margin-bottom: 5mm; }
-  .items-table th { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; padding: 2mm 0; }
-  .items-table td { padding: 1.5mm 0; vertical-align: top; }
+  .address-label { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2mm; color: #000; }
+  .address-text { font-size: 9.5pt; color: #3a4fa6; line-height: 1.7; }
+  .items-table { width: 100%; border-collapse: collapse; margin-bottom: 3mm; }
+  .items-table th { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; padding: 2mm 0; color: #000; border-bottom: 1px solid #ccc; }
+  .items-table td { padding: 1.8mm 0; vertical-align: top; font-size: 9.5pt; color: #3a4fa6; }
   .item-name { width: 80%; }
   .item-qty { width: 20%; text-align: right; white-space: nowrap; }
-  .passport-section { font-size: 9pt; line-height: 1.8; margin-bottom: 4mm; }
-  .footer { font-size: 9pt; text-align: center; color: #333; line-height: 1.8; }
+  .passport-section { font-size: 9pt; line-height: 1.8; margin-bottom: 4mm; color: #333; }
+  .footer { font-size: 9pt; text-align: center; color: #555; line-height: 1.8; }
 
   /* Print button — hidden when printing */
   .print-bar {
