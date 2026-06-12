@@ -518,10 +518,11 @@ export function buildOrderPackingSlipHtml(orders) {
   .address-label { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2mm; color: #000; }
   .address-text { font-size: 9.5pt; line-height: 1.7; }
   .items-table { width: 100%; border-collapse: collapse; margin-bottom: 3mm; }
-  .items-table th { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; padding: 2mm 0; color: #000; text-align:left; padding-bottom:10px; }
+  .items-table th { font-weight: bold; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.5px; padding: 2mm 0; color: #000; text-align: left; padding-bottom: 10px; }
   .items-table td { padding: 1.8mm 0; vertical-align: top; font-size: 9.5pt; }
   .item-name { width: 80%; }
   .item-qty { width: 20%; text-align: right; white-space: nowrap; }
+  th.item-qty { text-align: right; }
   .passport-section { font-size: 9pt; line-height: 1.8; margin-bottom: 4mm; color: #333; }
   .footer { font-size: 9pt; text-align: center; color: #555; line-height: 1.8; }
 
