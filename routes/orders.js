@@ -682,7 +682,7 @@ export function buildOrderFilters(query) {
       });
     }
   }
-  
+
   // ============================================
   // ORDER NUMBER
   // ============================================
@@ -1873,7 +1873,7 @@ router.get(
             : row.line_items || [];
 
         // Filter for horticultural products only
-        const plantLineItems = lineItems.filter(item => 
+        const plantLineItems = lineItems.filter(item =>
           plantIdSet.has(String(item.product_id))
         );
 
@@ -2320,7 +2320,7 @@ router.post('/sync', authenticateToken, async (req, res) => {
     // ============================================
 
     // Run customers + products in parallel, then orders (which may ref customers)
-    const [, ] = await Promise.all([
+    const [,] = await Promise.all([
       batchUpsertCustomers(shopifyCustomers),
       batchUpsertProducts(shopifyProducts),
     ]);
@@ -2823,7 +2823,7 @@ router.post('/royal-mail-create', authenticateToken, async (req, res) => {
     }
 
     const succeeded = results.filter(r => r.success);
-    const failed    = results.filter(r => !r.success);
+    const failed = results.filter(r => !r.success);
     res.json({ total: results.length, succeeded: succeeded.length, failed: failed.length, results });
   } catch (err) {
     console.error('royal-mail-create error:', err);
@@ -2848,13 +2848,21 @@ router.post('/royal-mail-labels', authenticateToken, async (req, res) => {
     const pdfBuffers = [];
     const errors = [];
 
+    let firstErrStatus = null;
+    let firstErrMsg = null;
     for (const id of rmOrderIdentifiers) {
       let buf = null;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           buf = await getLabel(id);
           break;
-        } catch {
+        } catch (e) {
+          if (!firstErrStatus) {
+            firstErrStatus = e?.response?.status;
+            const raw = e?.response?.data;
+            const parsed = raw ? (() => { try { return JSON.parse(Buffer.from(raw).toString()); } catch { return null; } })() : null;
+            firstErrMsg = parsed?.message || e.message;
+          }
           await new Promise(r => setTimeout(r, 2000));
         }
       }
@@ -2864,7 +2872,19 @@ router.post('/royal-mail-labels', authenticateToken, async (req, res) => {
     }
 
     if (!pdfBuffers.length) {
-      return res.status(404).json({ message: 'No labels could be retrieved', errors });
+      if (firstErrStatus === 403 || firstErrStatus === 401) {
+        return res.status(403).json({
+          needsTokenSetup: true,
+          message: 'The OBA token does not have "Download labels" permission. In Click & Drop go to Settings → OBA API tokens and enable "Download labels" for this token, then try again.',
+          httpStatus: firstErrStatus,
+          detail: firstErrMsg,
+          errors,
+        });
+      }
+      let hint = '';
+      if (firstErrStatus === 404) hint = ' — Labels not generated yet. Apply postage in Click & Drop first, then retry.';
+      else hint = ' — Postage may not have been applied yet in Click & Drop.';
+      return res.status(404).json({ message: `No labels could be retrieved${hint}`, httpStatus: firstErrStatus, detail: firstErrMsg, errors });
     }
 
     const mergedPdf = await mergeLabels(pdfBuffers);
@@ -2906,6 +2926,10 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
       .map(r => (typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data))
       .filter(Boolean);
 
+    // Map from order_number → DB id so we can return processed Shopify IDs to the frontend
+    const dbIdByNum = new Map();
+    rows.forEach(r => dbIdByNum.set(String(r.order_number), String(r.id)));
+
     // Phase 1 — fetch all existing Click & Drop orders and match by order_number
     const rmOrders = await listOrders(250);
     const rmByRef = new Map();
@@ -2916,16 +2940,22 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
 
     const toCreate = [];
     const matchedIdentifiers = []; // already in Click & Drop with tracking
+    const processedShopifyIds = []; // DB ids of orders that made it into Click & Drop
+    const trackingNumbers = {};     // shopifyId → trackingNumber
 
     for (const order of shopifyOrders) {
       const num = String(order.order_number).replace(/^#/, '');
       const existing = rmByRef.get(num);
+      const shopifyId = dbIdByNum.get(num) || String(order.id);
       if (existing?.trackingNumber) {
         // Already imported + postage applied — use existing identifier
         matchedIdentifiers.push(existing.orderIdentifier);
+        processedShopifyIds.push(shopifyId);
+        trackingNumbers[shopifyId] = existing.trackingNumber;
       } else if (existing && !existing.trackingNumber) {
         // In Click & Drop but no postage yet — include identifier, label attempt will fail gracefully
         matchedIdentifiers.push(existing.orderIdentifier);
+        processedShopifyIds.push(shopifyId);
       } else {
         // Not in Click & Drop at all — need to create
         toCreate.push(order);
@@ -2942,6 +2972,9 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
         const r = await createShipment(order, despatchDate);
         createdIdentifiers.push(r.orderIdentifier);
         if (r.labelBuffer) createdLabels.push(r.labelBuffer);
+        const shopifyId = dbIdByNum.get(String(order.order_number).replace(/^#/, '')) || String(order.id);
+        processedShopifyIds.push(shopifyId);
+        if (r.trackingNumber) trackingNumbers[shopifyId] = r.trackingNumber;
       } catch (err) {
         const raw = err.response?.data;
         const msg = raw?.message || JSON.stringify(raw) || err.message;
@@ -2961,16 +2994,32 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
       });
     }
 
+    // Expose successfully-processed Shopify IDs + tracking numbers for auto-fulfillment after manifest
+    res.setHeader('X-Processed-Shopify-Ids', processedShopifyIds.join(','));
+    res.setHeader('X-Tracking-Numbers', JSON.stringify(trackingNumbers));
+
     // Phase 3 — download labels for matched (existing) orders; new orders already have inline labels
     const pdfBuffers = [...createdLabels]; // inline labels from new orders first
+    const labelErrors = [];
     for (const id of matchedIdentifiers) {
+      let got = false;
+      let lastErr = null;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const buf = await getLabel(id);
-          if (buf) { pdfBuffers.push(buf); break; }
-        } catch {
+          if (buf) { pdfBuffers.push(buf); got = true; break; }
+        } catch (e) {
+          lastErr = e;
           await new Promise(r => setTimeout(r, 1500));
         }
+      }
+      if (!got) {
+        const status = lastErr?.response?.status;
+        const detail = lastErr?.response?.data
+          ? (() => { try { return JSON.parse(Buffer.from(lastErr.response.data).toString()); } catch { return null; } })()
+          : null;
+        labelErrors.push({ id, status, message: detail?.message || lastErr?.message });
+        console.warn(`[RM labels] Failed for ${id}: HTTP ${status}`, detail || lastErr?.message);
       }
       await new Promise(r => setTimeout(r, 200));
     }
@@ -2978,14 +3027,34 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
     const date = despatchDate || new Date().toISOString().slice(0, 10);
 
     if (!pdfBuffers.length) {
-      // Orders are in Click & Drop but labels not ready (no postage applied yet)
+      // Determine likely cause from label errors
+      const statuses = labelErrors.map(e => e.status).filter(Boolean);
+      const has403 = statuses.includes(403) || statuses.includes(401);
+      const has404 = statuses.includes(404);
+
+      // 403 = token missing "Download labels" permission → show token setup screen
+      if (has403) {
+        return res.status(403).json({
+          needsTokenSetup: true,
+          message: 'The OBA token does not have "Download labels" permission. In Click & Drop go to Settings → OBA API tokens and enable "Download labels" for this token, then try again.',
+          identifiers: allIdentifiers,
+          processedShopifyIds,
+          trackingNumbers,
+        });
+      }
+
+      let reason = 'Postage may not have been applied yet in Click & Drop.';
+      if (has404) reason = 'Labels are not yet generated. Go to Click & Drop, apply postage/shipping rules to these orders, then come back and click "Download Tracked 48 Labels".';
       return res.status(200).json({
         ordersCreated: true,
         identifiers: allIdentifiers,
+        processedShopifyIds,
+        trackingNumbers,
         labelsReady: false,
         matched: matchedIdentifiers.length,
         created: createdIdentifiers.length,
-        message: `${allIdentifiers.length} order(s) found in Click & Drop but labels are not ready — postage has not been applied yet. Open Click & Drop to apply postage, then come back to download labels.`,
+        labelErrors: labelErrors.slice(0, 5),
+        message: `${allIdentifiers.length} order(s) found in Click & Drop but labels could not be downloaded. ${reason}`,
         failed: failedOrders.map(r => r.orderNumber),
       });
     }
@@ -3011,16 +3080,35 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
 router.post('/royal-mail-manifest', authenticateToken, async (req, res) => {
   try {
     const { createManifest, getManifestLabel, isConfigured } = await import('../services/royalMail.js');
+    const { markOrdersFulfilled } = await import('../services/shopify.js');
 
     if (!isConfigured()) {
       return res.status(503).json({ message: 'Royal Mail API token not configured.' });
     }
 
-    const { orderIdentifiers } = req.body || {};
+    const { orderIdentifiers, shopifyOrderIds = [], trackingNumbers = {} } = req.body || {};
     if (!orderIdentifiers?.length) {
       return res.status(400).json({ message: 'orderIdentifiers is required — run the Royal Mail labelling step first to get order identifiers, then manifest only those orders.' });
     }
     const manifest = await createManifest(orderIdentifiers);
+
+    console.log(shopifyOrderIds, "shopifyOrderIds");
+
+    // Auto-fulfill orders in Shopify with tracking numbers and notify customers
+    const fulfillmentResults = [];
+    if (shopifyOrderIds.length) {
+      try {
+        const ordersToFulfill = shopifyOrderIds.map(id => ({
+          shopifyId: String(id),
+          trackingNumber: trackingNumbers[String(id)] || null,
+        }));
+        const fulfillRes = await markOrdersFulfilled(ordersToFulfill, true);
+        fulfillmentResults.push(...(fulfillRes.results || []));
+        console.log(`[Manifest] Auto-fulfilled ${fulfillRes.successfulIds?.length || 0}/${shopifyOrderIds.length} orders`);
+      } catch (fulfillErr) {
+        console.error('[Manifest] Auto-fulfill error (non-fatal):', fulfillErr.message);
+      }
+    }
 
     // The API returns { manifestNumber, documentPdf: base64 } directly — no polling needed
     if (manifest.documentPdf) {
@@ -3028,6 +3116,7 @@ router.post('/royal-mail-manifest', authenticateToken, async (req, res) => {
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="manifest_${manifest.manifestNumber || 'rm'}.pdf"`);
       res.setHeader('X-Manifest-Number', String(manifest.manifestNumber || ''));
+      res.setHeader('X-Fulfilled-Count', String(fulfillmentResults.filter(r => r.success).length));
       return res.send(pdfBuf);
     }
 
@@ -3039,24 +3128,273 @@ router.post('/royal-mail-manifest', authenticateToken, async (req, res) => {
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="manifest_${manifestGuid}.pdf"`);
         res.setHeader('X-Manifest-Id', manifestGuid);
+        res.setHeader('X-Fulfilled-Count', String(fulfillmentResults.filter(r => r.success).length));
         return res.send(pdfBuf);
       }
     }
 
-    res.json(manifest);
+    res.json({ ...manifest, fulfillmentResults });
   } catch (err) {
     const apiData = err.response?.data;
     const errCodes = apiData?.errors?.map(e => e.code) || [];
     // NO_ELIGIBLE_ORDERS — all orders already manifested, or none in printed state
     if (errCodes.includes('NO_ELIGIBLE_ORDERS') || errCodes.includes('CARRIER_NOT_FOUND')) {
       return res.status(400).json({
-        message: "No orders are ready to manifest — all of today's orders may already be manifested, or none have had postage applied yet.",
+        message: "Royal Mail: no orders are ready to manifest. Possible reasons: (1) these orders were already manifested in a previous run, (2) postage has not been applied yet in Click & Drop, or (3) the orders are test/cancelled orders that cannot be manifested.",
         code: 'NO_ELIGIBLE_ORDERS',
       });
     }
     const apiMsg = apiData?.message || apiData?.errors?.map(e => e.description).join('; ') || err.message;
     console.error('royal-mail-manifest error:', apiMsg);
     res.status(500).json({ message: apiMsg });
+  }
+});
+
+// ─── POST /api/orders/royal-mail-full-process ────────────────────────────────
+// Body: { orderIds: [], despatchDate: 'YYYY-MM-DD' }
+// All-in-one Royal Mail flow. Returns ONE merged PDF:
+//   [S/17 packing slips with Tracked 48 label embedded] + [Manifest] + [Order Records]
+// The Tracked 48 label is embedded in the S/17 peelable section — no separate label pages.
+router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
+  try {
+    const { createShipment, listOrders, getLabel, mergeLabels, createManifest, getManifestLabel, isConfigured } = await import('../services/royalMail.js');
+    const { markOrdersFulfilled } = await import('../services/shopify.js');
+    const { buildRecordPdf, buildS17Pdf } = await import('./preorders.js');
+
+    if (!isConfigured()) return res.status(503).json({ message: 'ROYAL_MAIL_OBA_TOKEN not set in .env' });
+
+    const { orderIds = [], despatchDate } = req.body;
+    if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
+
+    // ── 1. Load orders from DB ─────────────────────────────────────────────────
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT id, order_number, raw_data FROM orders WHERE id IN (${placeholders})`,
+      orderIds
+    );
+    const shopifyOrders = rows.map(r => typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data).filter(Boolean);
+    const dbIdByNum = new Map(rows.map(r => [String(r.order_number), String(r.id)]));
+
+    // ── 2. Match existing Click & Drop orders by orderReference ───────────────
+    const rmOrders = await listOrders(250);
+    const rmByRef = new Map();
+    rmOrders.forEach(o => rmByRef.set(String(o.orderReference || '').replace(/^#/, ''), o));
+
+    // Track per-order: { order, rmId, shopifyId } so we can download labels keyed by order.id
+    const ordersToLabel = []; // { order, rmId } — matched orders that already have an RM entry
+    const processedShopifyIds = [];
+    const trackingNumbers = {};
+    const toCreate = [];
+
+    for (const order of shopifyOrders) {
+      const num = String(order.order_number).replace(/^#/, '');
+      const existing = rmByRef.get(num);
+      const shopifyId = dbIdByNum.get(num) || String(order.id);
+      if (existing?.trackingNumber) {
+        ordersToLabel.push({ order, rmId: existing.orderIdentifier });
+        processedShopifyIds.push(shopifyId);
+        trackingNumbers[shopifyId] = existing.trackingNumber;
+      } else if (existing) {
+        ordersToLabel.push({ order, rmId: existing.orderIdentifier });
+        processedShopifyIds.push(shopifyId);
+      } else {
+        toCreate.push({ order, shopifyId });
+      }
+    }
+
+    // ── 3. Create shipments for orders not yet in Click & Drop ────────────────
+    const allIdentifiers = ordersToLabel.map(o => o.rmId);
+    const failedOrders = [];
+    const labelMap = new Map(); // shopify order.id → label buffer (for S/17 embedding)
+    const labelBuffers = [];    // flat list of label buffers (for standalone Tracked 48 section)
+
+    for (const { order, shopifyId } of toCreate) {
+      try {
+        const r = await createShipment(order, despatchDate);
+        allIdentifiers.push(r.orderIdentifier);
+        processedShopifyIds.push(shopifyId);
+        if (r.trackingNumber) trackingNumbers[shopifyId] = r.trackingNumber;
+        if (r.labelBuffer) {
+          labelMap.set(String(order.id), r.labelBuffer);
+          labelBuffers.push(r.labelBuffer);
+        }
+      } catch (err) {
+        if (err.response?.status === 401 || err.response?.status === 403) {
+          return res.status(403).json({ needsTokenSetup: true, message: 'Royal Mail token auth failed — check ROYAL_MAIL_OBA_TOKEN.' });
+        }
+        failedOrders.push({ orderNumber: order.order_number, error: err.message });
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    if (!allIdentifiers.length) {
+      return res.status(502).json({ message: 'No orders could be matched or created in Click & Drop.', errors: failedOrders.map(r => `#${r.orderNumber}: ${r.error}`) });
+    }
+
+    // ── 4. Download labels for matched orders ─────────────────────────────────
+    const labelErrors = [];
+    for (const { order, rmId } of ordersToLabel) {
+      let got = false;
+      let lastErr = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const buf = await getLabel(rmId);
+          if (buf) {
+            labelMap.set(String(order.id), buf);
+            labelBuffers.push(buf);
+            got = true;
+            break;
+          }
+        } catch (e) {
+          lastErr = e;
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+      if (!got) labelErrors.push({ id: rmId, status: lastErr?.response?.status, message: lastErr?.message });
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    if (!labelMap.size) {
+      const has403 = labelErrors.some(e => e.status === 403 || e.status === 401);
+      if (has403) {
+        return res.status(403).json({
+          needsTokenSetup: true,
+          identifiers: allIdentifiers, processedShopifyIds, trackingNumbers,
+          message: 'OBA token missing "Download labels" permission. In Click & Drop → Settings → OBA API tokens → enable "Download labels".',
+        });
+      }
+      return res.status(200).json({
+        labelsReady: false,
+        identifiers: allIdentifiers, processedShopifyIds, trackingNumbers,
+        message: 'Labels not yet generated — go to Click & Drop, apply postage to these orders, then retry.',
+        failed: failedOrders.map(r => r.orderNumber),
+      });
+    }
+
+    // ── 5. Tracked 48 labels PDF (2 copies each) ──────────────────────────────
+    let labelsPdf = null;
+    try {
+      labelsPdf = await mergeLabels(labelBuffers, 2);
+    } catch (labErr) {
+      console.warn('[FullProcess] Labels merge failed (non-fatal):', labErr.message);
+    }
+
+    // ── 6. S/17 packing slips (plain label area at bottom for physical label) ──
+    let s17Pdf = null;
+    try {
+      const processedRows = rows.filter(r => processedShopifyIds.includes(String(r.id)));
+      const processedOrders = processedRows.map(r => typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data).filter(Boolean);
+      s17Pdf = Buffer.from(await buildS17Pdf(processedOrders));
+    } catch (s17Err) {
+      console.warn('[FullProcess] S/17 PDF failed (non-fatal):', s17Err.message);
+    }
+
+    // ── 7. Manifest PDF ────────────────────────────────────────────────────────
+    let manifestPdf = null;
+    let manifestNumber = '';
+    let manifestError = '';
+    try {
+      const manifest = await createManifest(allIdentifiers);
+      manifestNumber = String(manifest.manifestNumber || '');
+      if (manifest.documentPdf) {
+        manifestPdf = Buffer.from(manifest.documentPdf, 'base64');
+      } else if (manifest.manifests?.[0]) {
+        manifestPdf = await getManifestLabel(manifest.manifests[0]);
+      }
+    } catch (manifestErr) {
+      manifestError = manifestErr.message;
+      console.warn('[FullProcess] Manifest failed (non-fatal):', manifestErr.message);
+    }
+
+    // ── 8. Order records PDF ──────────────────────────────────────────────────
+    let recordsPdf = null;
+    let recordsError = '';
+    try {
+      const processedRows = rows.filter(r => processedShopifyIds.includes(String(r.id)));
+      const processedOrders = processedRows.map(r => typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data).filter(Boolean);
+      if (processedOrders.length) recordsPdf = Buffer.from(await buildRecordPdf(processedOrders));
+    } catch (recErr) {
+      recordsError = recErr.message;
+      console.warn('[FullProcess] Order records PDF failed (non-fatal):', recErr.message);
+    }
+
+    // ── 9. Merge all four sections into ONE PDF ────────────────────────────────
+    // Order: Tracked 48 Labels → S/17 Packing Slips → Manifest → Order Records
+    const sections = [labelsPdf, s17Pdf, manifestPdf, recordsPdf].filter(Boolean);
+    const finalPdf = await mergeLabels(sections, 1);
+
+    // ── 10. Auto-fulfill in Shopify + send notification email ────────────────
+    // processedShopifyIds holds DB row IDs (used for row filtering above).
+    // Shopify fulfillment API needs the actual Shopify order ID from raw_data.id.
+    let fulfilledCount = 0;
+    const fulfillErrors = [];
+    if (processedShopifyIds.length) {
+      try {
+        // Build a map: DB row id → { shopifyApiId, trackingNumber, row }
+        const dbToApiId = new Map();
+        for (const row of rows) {
+          if (!processedShopifyIds.includes(String(row.id))) continue;
+          const raw = typeof row.raw_data === 'string' ? JSON.parse(row.raw_data) : row.raw_data;
+          if (raw?.id) dbToApiId.set(String(row.id), { shopifyApiId: String(raw.id), raw, row });
+        }
+
+        const ordersToFulfill = [...dbToApiId.values()].map(({ shopifyApiId, row }) => ({
+          shopifyId: shopifyApiId,
+          trackingNumber: trackingNumbers[String(row.id)] || null,
+        }));
+
+        const fulfillRes = await markOrdersFulfilled(ordersToFulfill, true);
+        const fulfilled = fulfillRes.results?.filter(r => r.success) || [];
+        const failed    = fulfillRes.results?.filter(r => !r.success) || [];
+        fulfilledCount  = fulfilled.length;
+        failed.forEach(f => fulfillErrors.push(`${f.id}: ${f.error}`));
+
+        // Send custom notification email for every successfully fulfilled order
+        if (fulfilled.length) {
+          const { sendOrderNotification, isConfigured: emailConfigured } = await import('../services/email.js');
+          if (emailConfigured()) {
+            const fulfilledApiIds = new Set(fulfilled.map(f => String(f.id)));
+            for (const { shopifyApiId, raw, row } of dbToApiId.values()) {
+              if (!fulfilledApiIds.has(shopifyApiId)) continue;
+              try {
+                const tracking = trackingNumbers[String(row.id)]
+                  ? { trackingNumber: trackingNumbers[String(row.id)], carrier: 'Royal Mail' }
+                  : null;
+                await sendOrderNotification(raw, tracking);
+              } catch (mailErr) {
+                console.warn(`[FullProcess] Email failed for ${row.order_number}:`, mailErr.message);
+              }
+            }
+          }
+        }
+      } catch (fulfillErr) {
+        console.error('[FullProcess] Shopify fulfillment error (non-fatal):', fulfillErr.message);
+        fulfillErrors.push(fulfillErr.message);
+      }
+    }
+
+    // ── 11. Send combined PDF ─────────────────────────────────────────────────
+    const date = despatchDate || new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="royal_mail_${date}.pdf"`);
+    res.setHeader('X-Shipment-Count', String(labelMap.size));
+    res.setHeader('X-Order-Identifiers', allIdentifiers.join(','));
+    res.setHeader('X-Processed-Shopify-Ids', processedShopifyIds.join(','));
+    res.setHeader('X-Tracking-Numbers', JSON.stringify(trackingNumbers));
+    res.setHeader('X-Fulfilled-Count', String(fulfilledCount));
+    res.setHeader('X-Manifest-Number', manifestNumber);
+    res.setHeader('X-Has-Labels', labelsPdf ? '1' : '0');
+    res.setHeader('X-Has-S17', s17Pdf ? '1' : '0');
+    res.setHeader('X-Has-Manifest', manifestPdf ? '1' : '0');
+    res.setHeader('X-Has-Records', recordsPdf ? '1' : '0');
+    if (manifestError) res.setHeader('X-Manifest-Error', manifestError.slice(0, 300));
+    if (recordsError) res.setHeader('X-Records-Error', recordsError.slice(0, 300));
+    if (failedOrders.length) res.setHeader('X-Failed-Orders', failedOrders.map(r => r.orderNumber).join(','));
+    if (fulfillErrors.length) res.setHeader('X-Fulfill-Errors', fulfillErrors.join(' | ').slice(0, 500));
+    res.send(finalPdf);
+  } catch (err) {
+    console.error('royal-mail-full-process error:', err);
+    res.status(500).json({ message: err.message });
   }
 });
 
@@ -3155,16 +3493,10 @@ router.post('/order-records', authenticateToken, async (req, res) => {
 // ─── POST /api/orders/royal-mail-s17 ─────────────────────────────────────────
 // Body: { orderIds, despatchDate }
 // Runs Royal Mail process (create/match + fetch individual labels) and returns
-// a multi-page S/17 integrated-label PDF — one A4 per order with the
-// 100mm×150mm shipping label embedded in the peelable bottom section.
+// a multi-page S/17 integrated-label PDF — one A4 per order, plain label area at bottom.
 router.post('/royal-mail-s17', authenticateToken, async (req, res) => {
   try {
-    const { createShipment, listOrders, getLabel, isConfigured } = await import('../services/royalMail.js');
     const { buildS17Pdf } = await import('./preorders.js');
-
-    if (!isConfigured()) {
-      return res.status(503).json({ message: 'ROYAL_MAIL_OBA_TOKEN not set in .env' });
-    }
 
     const { orderIds = [], despatchDate } = req.body;
     if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
@@ -3179,51 +3511,11 @@ router.post('/royal-mail-s17', authenticateToken, async (req, res) => {
       .map(r => (typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data))
       .filter(Boolean);
 
-    // Match orders already in Click & Drop, create missing ones
-    const rmOrders = await listOrders(250);
-    const rmByRef = new Map();
-    rmOrders.forEach(o => {
-      const ref = String(o.orderReference || '').replace(/^#/, '');
-      rmByRef.set(ref, o);
-    });
-
-    // Collect individual label buffers keyed by Shopify order ID
-    const labelMap = new Map();
-
-    for (const order of shopifyOrders) {
-      const num = String(order.order_number).replace(/^#/, '');
-      const existing = rmByRef.get(num);
-      try {
-        let labelBuf = null;
-        if (existing?.orderIdentifier) {
-          // Already in Click & Drop — fetch its label
-          for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-              labelBuf = await getLabel(existing.orderIdentifier);
-              if (labelBuf) break;
-            } catch { await new Promise(r => setTimeout(r, 1500)); }
-          }
-        } else {
-          // Create order + postage in Click & Drop; get inline label
-          const r = await createShipment(order, despatchDate);
-          labelBuf = r.labelBuffer;
-        }
-        if (labelBuf) labelMap.set(String(order.id), labelBuf);
-      } catch (err) {
-        if (err.response?.status === 401 || err.response?.status === 403) {
-          return res.status(403).json({ needsTokenSetup: true, message: 'Royal Mail token auth failed.' });
-        }
-        console.error(`[S17] label failed for #${order.order_number}:`, err.message);
-      }
-      await new Promise(r => setTimeout(r, 300));
-    }
-
-    const pdfBuffer = await buildS17Pdf(shopifyOrders, labelMap);
+    const pdfBuffer = await buildS17Pdf(shopifyOrders);
     const date = despatchDate || new Date().toISOString().slice(0, 10);
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="s17_packing_slips_${date}.pdf"`);
-    res.setHeader('X-Labels-Embedded', String(labelMap.size));
     res.send(Buffer.from(pdfBuffer));
   } catch (err) {
     console.error('royal-mail-s17 error:', err);
@@ -3375,8 +3667,8 @@ router.post('/royal-mail-fetch-identifiers', authenticateToken, async (req, res)
       total: rmOrders.length,
       matched: matched.map(o => ({
         orderIdentifier: o.orderIdentifier,
-        orderReference:  o.orderReference,
-        status:          o.status,
+        orderReference: o.orderReference,
+        status: o.status,
       })),
     });
   } catch (err) {
@@ -3390,7 +3682,7 @@ router.post('/royal-mail-fetch-identifiers', authenticateToken, async (req, res)
 router.post('/seed-test-order', authenticateToken, async (req, res) => {
   const fakeOrder = {
     id: 999999999,
-    order_number: 999001,
+    order_number: 999005,
     email: 'testcustomer@yopmail.com',
     financial_status: 'paid',
     fulfillment_status: null,
@@ -3462,7 +3754,7 @@ router.post('/seed-test-order', authenticateToken, async (req, res) => {
     await upsertOrder(fakeOrder);
     res.json({
       success: true,
-      message: 'Test order inserted — it will appear in the orders list as #999001',
+      message: 'Test order inserted — it will appear in the orders list as #999005',
       orderId: fakeOrder.id,
       orderNumber: fakeOrder.order_number,
     });

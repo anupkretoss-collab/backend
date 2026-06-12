@@ -25,7 +25,7 @@ const router = express.Router();
  */
 function filterOrdersByVariety(orders, { exactNames = [], keywords = [], mode = 'exclude' } = {}) {
   const lowerExact = exactNames.map(n => n.toLowerCase().trim());
-  const lowerKw    = keywords.map(k => k.toLowerCase().trim()).filter(Boolean);
+  const lowerKw = keywords.map(k => k.toLowerCase().trim()).filter(Boolean);
 
   return orders.filter(order => {
     const lineItemTitles = (order.line_items || []).map(li =>
@@ -34,7 +34,7 @@ function filterOrdersByVariety(orders, { exactNames = [], keywords = [], mode = 
 
     const matched = lineItemTitles.some(title => {
       const exactHit = lowerExact.some(name => title === name);
-      const kwHit    = lowerKw.some(kw => title.includes(kw));
+      const kwHit = lowerKw.some(kw => title.includes(kw));
       return exactHit || kwHit;
     });
 
@@ -61,7 +61,7 @@ function limitVarietyQuantities(orders, limits = []) {
     for (let i = 0; i < limits.length; i++) {
       const { exactName, keyword, maxQty } = limits[i];
       const lowerExact = exactName?.toLowerCase().trim();
-      const lowerKw    = keyword?.toLowerCase().trim();
+      const lowerKw = keyword?.toLowerCase().trim();
 
       const matchingQty = lineItems.reduce((sum, li) => {
         const title = (li.title || '').toLowerCase().trim();
@@ -319,7 +319,7 @@ export function buildShippingCsv(orders, carrier) {
       const a = o.shipping_address || {};
       const c = o.customer || {};
       const rawFirst = c.first_name || '';
-      const rawLast  = c.last_name  || '';
+      const rawLast = c.last_name || '';
       const { first, last } = (rawFirst || rawLast)
         ? { first: rawFirst, last: rawLast }
         : splitName(a.name);
@@ -359,7 +359,7 @@ export function buildShippingCsv(orders, carrier) {
     const a = o.shipping_address || {};
     const c = o.customer || {};
     const rawFirst = c.first_name || '';
-    const rawLast  = c.last_name  || '';
+    const rawLast = c.last_name || '';
     const { first, last } = (rawFirst || rawLast)
       ? { first: rawFirst, last: rawLast }
       : splitName(a.name);
@@ -389,16 +389,16 @@ export function buildShippingCsv(orders, carrier) {
 // ─── Shared Order Packing Slip builder (Shopify-style, no label area) ─────────
 
 export function buildOrderPackingSlipHtml(orders) {
-  const storeName    = process.env.STORE_NAME    || 'South Devon Chilli Farm';
-  const storeAddr    = process.env.STORE_ADDRESS  || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
-  const storeEmail   = process.env.STORE_EMAIL    || 'orders@sdcf.co.uk';
-  const storeWebsite = process.env.STORE_WEBSITE  || 'southdevonchillifarm.co.uk';
-  const storeEori    = process.env.STORE_EORI     || 'GB885490630200';
+  const storeName = process.env.STORE_NAME || 'South Devon Chilli Farm';
+  const storeAddr = process.env.STORE_ADDRESS || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
+  const storeEmail = process.env.STORE_EMAIL || 'orders@sdcf.co.uk';
+  const storeWebsite = process.env.STORE_WEBSITE || 'southdevonchillifarm.co.uk';
+  const storeEori = process.env.STORE_EORI || 'GB885490630200';
 
   const pages = orders.map(o => {
-    const c  = o.customer || {};
+    const c = o.customer || {};
     const sa = o.shipping_address || {};
-    const ba = o.billing_address  || sa;
+    const ba = o.billing_address || sa;
 
     const fmtAddr = (addr) => [
       addr.name,
@@ -461,10 +461,12 @@ export function buildOrderPackingSlipHtml(orders) {
   <div class="footer">
     <div>Thank you for shopping with us!</div>
     <br>
+    <br>
     <div>${storeName}</div>
     <div>${storeAddr}</div>
     <div>${storeEmail}</div>
     <div>${storeWebsite}</div>
+    <br>
     <br>
     <div>EORI No: ${storeEori}</div>
   </div>
@@ -554,16 +556,16 @@ ${pages}
 // ─── Shared S/17 HTML builder (exported for use in orders.js) ────────────────
 
 export function buildS17Html(orders, shippingDate) {
-  const storeName    = process.env.STORE_NAME    || 'South Devon Chilli Farm';
-  const storeAddr    = process.env.STORE_ADDRESS  || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
-  const storeEmail   = process.env.STORE_EMAIL    || 'orders@sdcf.co.uk';
-  const storeWebsite = process.env.STORE_WEBSITE  || 'southdevonchillifarm.co.uk';
-  const storeEori    = process.env.STORE_EORI     || 'GB885490630200';
+  const storeName = process.env.STORE_NAME || 'South Devon Chilli Farm';
+  const storeAddr = process.env.STORE_ADDRESS || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
+  const storeEmail = process.env.STORE_EMAIL || 'orders@sdcf.co.uk';
+  const storeWebsite = process.env.STORE_WEBSITE || 'southdevonchillifarm.co.uk';
+  const storeEori = process.env.STORE_EORI || 'GB885490630200';
 
   const pages = orders.map(o => {
-    const c  = o.customer || {};
+    const c = o.customer || {};
     const sa = o.shipping_address || {};
-    const ba = o.billing_address  || sa;
+    const ba = o.billing_address || sa;
 
     const fmtAddr = (addr) => [
       addr.name,
@@ -576,7 +578,7 @@ export function buildS17Html(orders, shippingDate) {
     ].filter(Boolean).join('<br>');
 
     const phone = sa.phone || c.phone || ba.phone || '';
-    const email = c.email  || o.email || '';
+    const email = c.email || o.email || '';
 
     const itemRows = (o.line_items || []).map((li, idx, arr) =>
       `<tr>
@@ -718,13 +720,14 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
 
   const pdfDoc = await PDFDocument.create();
   const regular = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const bold    = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  const storeName    = process.env.STORE_NAME    || 'South Devon Chilli Farm';
-  const storeAddr    = process.env.STORE_ADDRESS  || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
-  const storeEmail   = process.env.STORE_EMAIL    || 'orders@sdcf.co.uk';
-  const storeWebsite = process.env.STORE_WEBSITE  || 'southdevonchillifarm.co.uk';
-  const storeEori    = process.env.STORE_EORI     || 'GB885490630200';
+  const storeName = process.env.STORE_NAME || 'South Devon Chilli Farm';
+  const rawAddr = process.env.STORE_ADDRESS || 'South Devon Chilli Farm, Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX, United Kingdom';
+  const storeAddr = rawAddr.startsWith(storeName) ? rawAddr.slice(storeName.length).replace(/^,\s*/, '') : rawAddr;
+  const storeEmail = process.env.STORE_EMAIL || 'orders@southdevonchillifarm.co.uk';
+  const storeWebsite = process.env.STORE_WEBSITE || 'southdevonchillifarm.co.uk';
+  const storeEori = process.env.STORE_EORI || 'GB885490630200';
 
   for (const order of orders) {
     const page = pdfDoc.addPage([210 * MM, 297 * MM]); // A4
@@ -735,49 +738,10 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
     const MR = W - 10 * MM;  // right boundary
     const CW = MR - ML;       // content width
 
-    // S/17 label section: 100mm × 150mm, centred, 10mm from bottom
-    const LW = 100 * MM;
-    const LH = 150 * MM;
-    const LX = (W - LW) / 2;
-    const LY = 10 * MM;
-    const SEPY = LY + LH + 4 * MM; // dashed separator y
-
-    // ── Embed shipping label ──────────────────────────────────────
-    const labelBuf = labelMap.get(String(order.id));
-    if (labelBuf) {
-      try {
-        const labelPdf = await PDFDocument.load(labelBuf);
-        const [embPage] = await pdfDoc.embedPdf(labelPdf, [0]);
-        page.drawPage(embPage, { x: LX, y: LY, width: LW, height: LH });
-      } catch (e) {
-        console.error('[S17 PDF] embed failed:', e.message);
-      }
-    }
-    // Always draw border around label area
-    page.drawRectangle({
-      x: LX, y: LY, width: LW, height: LH,
-      borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 0.5,
-      borderDashArray: labelBuf ? [] : [3, 3],
-    });
-    if (!labelBuf) {
-      const ph = 'Shipping Label';
-      const phW = regular.widthOfTextAtSize(ph, 10);
-      page.drawText(ph, { x: LX + (LW - phW) / 2, y: LY + LH / 2 - 5, size: 10, font: regular, color: rgb(0.75, 0.75, 0.75) });
-    }
-
-    // ── Dashed separator ─────────────────────────────────────────
-    page.drawLine({
-      start: { x: ML, y: SEPY },
-      end:   { x: MR, y: SEPY },
-      thickness: 0.75,
-      color: rgb(0.55, 0.55, 0.55),
-      dashArray: [4, 3],
-    });
-
     // ── Packing slip content ──────────────────────────────────────
-    const c  = order.customer || {};
+    const c = order.customer || {};
     const sa = order.shipping_address || {};
-    const ba = order.billing_address  || sa;
+    const ba = order.billing_address || sa;
 
     const orderDate = order.created_at
       ? new Date(order.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
@@ -785,27 +749,33 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
 
     let y = H - 12 * MM;
 
-    // Store name + order meta
+    // Store name + order meta (order number and date on separate lines, right-aligned)
     page.drawText(storeName.toUpperCase(), { x: ML, y, size: 11, font: bold, color: rgb(0, 0, 0) });
-    const metaText = `Order #${order.order_number}   ${orderDate}`;
-    page.drawText(metaText, {
-      x: MR - regular.widthOfTextAtSize(metaText, 9), y: y + 0.5,
+    const orderRef = `Order #${order.order_number}`;
+    page.drawText(orderRef, {
+      x: MR - regular.widthOfTextAtSize(orderRef, 9), y: y + 0.5,
       size: 9, font: regular, color: rgb(0.35, 0.35, 0.35),
     });
-    y -= 6 * MM;
+    if (orderDate) {
+      page.drawText(orderDate, {
+        x: MR - regular.widthOfTextAtSize(orderDate, 9), y: y + 0.5 - 4 * MM,
+        size: 9, font: regular, color: rgb(0.35, 0.35, 0.35),
+      });
+    }
+    y -= 10 * MM;
 
-    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
+    // page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
     y -= 5 * MM;
 
     // Addresses (two columns)
     const COL2X = ML + CW / 2;
-    const COLW  = CW / 2 - 3 * MM;
+    const COLW = CW / 2 - 3 * MM;
     const addrY = y;
 
     const drawAddrCol = (label, addr, phone, email, startX) => {
       let cy = addrY;
       page.drawText(label, { x: startX, y: cy, size: 8, font: bold, color: rgb(0, 0, 0) });
-      cy -= 4 * MM;
+      cy -= 7 * MM;
       for (const line of [
         addr.name || '', addr.company || '',
         addr.address1 || '', addr.address2 || '',
@@ -822,18 +792,17 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
 
     const shipPhone = sa.phone || c.phone || '';
     const billEmail = c.email || order.email || '';
-    const endShipY = drawAddrCol('SHIP TO', sa, shipPhone, '',          ML);
-    const endBillY = drawAddrCol('BILL TO', ba, '',         billEmail,  COL2X);
+    const endShipY = drawAddrCol('SHIP TO', sa, shipPhone, '', ML);
+    const endBillY = drawAddrCol('BILL TO', ba, '', billEmail, COL2X);
     y = Math.min(endShipY, endBillY) - 2 * MM;
 
-    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
+    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 2, color: rgb(0, 0, 0) });
     y -= 5 * MM;
 
     // Items table
     page.drawText('ITEMS', { x: ML, y, size: 8, font: bold, color: rgb(0, 0, 0) });
     page.drawText('QUANTITY', { x: MR - bold.widthOfTextAtSize('QUANTITY', 8), y, size: 8, font: bold, color: rgb(0, 0, 0) });
     y -= 3 * MM;
-    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.25, color: rgb(0.75, 0.75, 0.75) });
     y -= 4.5 * MM;
 
     const lineItems = order.line_items || [];
@@ -847,40 +816,46 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
       y -= 5 * MM;
     }
 
-    if (order.note) {
-      page.drawText(truncateText(`Note: ${order.note}`, CW, regular, 8), { x: ML, y, size: 8, font: regular, color: rgb(0.6, 0.3, 0) });
-      y -= 5 * MM;
-    }
+    // if (order.note) {
+    //   page.drawText(truncateText(`Note: ${order.note}`, CW, regular, 8), { x: ML, y, size: 8, font: regular, color: rgb(0.6, 0.3, 0) });
+    //   y -= 5 * MM;
+    // }
 
     y -= 2 * MM;
-    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
+    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 2, color: rgb(0, 0, 0) });
     y -= 5 * MM;
 
     // UK Plant Passport
-    page.drawText('UK Plant Passport', { x: ML, y, size: 8.5, font: bold,    color: rgb(0, 0, 0) }); y -= 4 * MM;
-    page.drawText('A Variety: see packet/label', { x: ML, y, size: 8, font: regular, color: rgb(0, 0, 0) }); y -= 4 * MM;
-    page.drawText('B 100561   C   D GB   E',      { x: ML, y, size: 8, font: regular, color: rgb(0, 0, 0) }); y -= 7 * MM;
+    page.drawText('UK Plant Passport', { x: ML, y, size: 8.5, font: bold, color: rgb(0, 0, 0) }); y -= 4 * MM;
+    for (const line of ['A Variety: see packet/label', 'B 100561', 'C', 'D GB', 'E']) {
+      page.drawText(line, { x: ML, y, size: 8, font: regular, color: rgb(0, 0, 0) }); y -= 4 * MM;
+    }
+    y -= 3 * MM;
 
     // Footer (centred)
     for (const line of [
       'Thank you for shopping with us!',
-      storeName,
-      storeAddr,
-      storeEmail,
-      storeWebsite,
-      `EORI No: ${storeEori}`,
     ]) {
       const lw = regular.widthOfTextAtSize(line, 7.5);
       page.drawText(line, { x: ML + (CW - lw) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
       y -= 3.8 * MM;
     }
+    y -= 3.8 * MM; // gap after "Thank you"
+    for (const line of [storeName, storeAddr, storeEmail, storeWebsite]) {
+      const lw = regular.widthOfTextAtSize(line, 7.5);
+      page.drawText(line, { x: ML + (CW - lw) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
+      y -= 3.8 * MM;
+    }
+    y -= 3.8 * MM; // gap before EORI
+    const eoriLine = `EORI No: ${storeEori}`;
+    page.drawText(eoriLine, { x: ML + (CW - regular.widthOfTextAtSize(eoriLine, 7.5)) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
   }
 
   return pdfDoc.save();
 }
 
 // ─── 100mm × 150mm per-order record PDF ──────────────────────────────────────
-// One page per order, each page is label-sized (100 × 150mm).
+// Two identical pages per order, each page is label-sized (100 × 150mm).
 // Compact packing record — store name, order, address, items, passport, footer.
 export async function buildRecordPdf(orders) {
   const MM = 2.8346;
@@ -894,117 +869,119 @@ export async function buildRecordPdf(orders) {
 
   const pdfDoc = await PDFDocument.create();
   const regular = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const bold    = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  const storeName    = process.env.STORE_NAME    || 'South Devon Chilli Farm';
-  const storeAddr    = process.env.STORE_ADDRESS  || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
-  const storeEmail   = process.env.STORE_EMAIL    || 'orders@sdcf.co.uk';
-  const storeWebsite = process.env.STORE_WEBSITE  || 'southdevonchillifarm.co.uk';
-  const storeEori    = process.env.STORE_EORI     || 'GB885490630200';
+  const storeName = process.env.STORE_NAME || 'South Devon Chilli Farm';
+  const storeAddr = process.env.STORE_ADDRESS || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
+  const storeEmail = process.env.STORE_EMAIL || 'orders@sdcf.co.uk';
+  const storeWebsite = process.env.STORE_WEBSITE || 'southdevonchillifarm.co.uk';
+  const storeEori = process.env.STORE_EORI || 'GB885490630200';
 
   for (const order of orders) {
-    // 100mm × 150mm page
-    const W = 100 * MM;  // 283.46pt
-    const H = 150 * MM;  // 425.2pt
-    const page = pdfDoc.addPage([W, H]);
+    {
+      // 100mm × 150mm page
+      const W = 100 * MM;  // 283.46pt
+      const H = 150 * MM;  // 425.2pt
+      const page = pdfDoc.addPage([W, H]);
 
-    const ML = 5 * MM;
-    const MR = W - 5 * MM;
-    const CW = MR - ML;
+      const ML = 5 * MM;
+      const MR = W - 5 * MM;
+      const CW = MR - ML;
 
-    const c  = order.customer || {};
-    const sa = order.shipping_address || {};
+      const c = order.customer || {};
+      const sa = order.shipping_address || {};
 
-    const orderDate = order.created_at
-      ? new Date(order.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
-      : '';
+      const orderDate = order.created_at
+        ? new Date(order.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+        : '';
 
-    let y = H - 7 * MM;
+      let y = H - 7 * MM;
 
-    // ── Store name + order number ──────────────────────────────
-    page.drawText(tr(storeName.toUpperCase(), CW * 0.6, bold, 9), {
-      x: ML, y, size: 9, font: bold, color: rgb(0, 0, 0),
-    });
-    const orderRef = `#${order.order_number}`;
-    page.drawText(orderRef, {
-      x: MR - bold.widthOfTextAtSize(orderRef, 9), y,
-      size: 9, font: bold, color: rgb(0, 0, 0),
-    });
-    y -= 4 * MM;
-
-    if (orderDate) {
-      const dw = regular.widthOfTextAtSize(orderDate, 7.5);
-      page.drawText(orderDate, { x: MR - dw, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
-    }
-    y -= 3 * MM;
-
-    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
-    y -= 4 * MM;
-
-    // ── Ship To ───────────────────────────────────────────────
-    page.drawText('SHIP TO', { x: ML, y, size: 7, font: bold, color: rgb(0, 0, 0) });
-    y -= 3.5 * MM;
-
-    const phone = sa.phone || c.phone || '';
-    const addrLines = [
-      sa.name, sa.company, sa.address1, sa.address2,
-      [sa.city, sa.province, sa.zip].filter(Boolean).join(', '),
-      sa.country, phone,
-    ].filter(Boolean);
-
-    for (const line of addrLines) {
-      page.drawText(tr(line, CW, regular, 8.5), { x: ML, y, size: 8.5, font: regular, color: rgb(0, 0, 0) });
-      y -= 4 * MM;
-    }
-    y -= 1 * MM;
-
-    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
-    y -= 4 * MM;
-
-    // ── Items ─────────────────────────────────────────────────
-    page.drawText('ITEMS', { x: ML, y, size: 7, font: bold, color: rgb(0, 0, 0) });
-    page.drawText('QTY', { x: MR - bold.widthOfTextAtSize('QTY', 7), y, size: 7, font: bold, color: rgb(0, 0, 0) });
-    y -= 3.5 * MM;
-
-    const lineItems = order.line_items || [];
-    const totalQty  = lineItems.reduce((s, li) => s + (li.quantity || 1), 0);
-    for (const li of lineItems) {
-      const title  = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
-      const qtyStr = `${li.quantity}/${totalQty}`;
-      const qw     = regular.widthOfTextAtSize(qtyStr, 8);
-      page.drawText(tr(title, CW - qw - 3 * MM, regular, 8), { x: ML, y, size: 8, font: regular, color: rgb(0, 0, 0) });
-      page.drawText(qtyStr, { x: MR - qw, y, size: 8, font: regular, color: rgb(0, 0, 0) });
-      y -= 4 * MM;
-    }
-
-    if (order.note) {
-      page.drawText(tr(`Note: ${order.note}`, CW, regular, 7), { x: ML, y, size: 7, font: regular, color: rgb(0.6, 0.3, 0) });
-      y -= 3.5 * MM;
-    }
-    y -= 1 * MM;
-
-    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
-    y -= 3.5 * MM;
-
-    // ── UK Plant Passport ─────────────────────────────────────
-    page.drawText('UK Plant Passport  A Variety: see packet/label  B 100561  D GB', {
-      x: ML, y, size: 6.5, font: regular, color: rgb(0, 0, 0),
-    });
-    y -= 4 * MM;
-
-    page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.25, color: rgb(0.7, 0.7, 0.7) });
-    y -= 3.5 * MM;
-
-    // ── Footer ────────────────────────────────────────────────
-    for (const line of [storeName, storeAddr, `${storeEmail}  |  ${storeWebsite}`, `EORI No: ${storeEori}`]) {
-      const lw = regular.widthOfTextAtSize(line, 6);
-      page.drawText(tr(line, CW, regular, 6), {
-        x: ML + (CW - Math.min(lw, CW)) / 2, y,
-        size: 6, font: regular, color: rgb(0.45, 0.45, 0.45),
+      // ── Store name + order number ──────────────────────────────
+      page.drawText(tr(storeName.toUpperCase(), CW * 0.6, bold, 9), {
+        x: ML, y, size: 9, font: bold, color: rgb(0, 0, 0),
       });
-      y -= 3.2 * MM;
-    }
-  }
+      const orderRef = `#${order.order_number}`;
+      page.drawText(orderRef, {
+        x: MR - bold.widthOfTextAtSize(orderRef, 9), y,
+        size: 9, font: bold, color: rgb(0, 0, 0),
+      });
+      y -= 4 * MM;
+
+      if (orderDate) {
+        const dw = regular.widthOfTextAtSize(orderDate, 7.5);
+        page.drawText(orderDate, { x: MR - dw, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
+      }
+      y -= 3 * MM;
+
+      page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
+      y -= 4 * MM;
+
+      // ── Ship To ───────────────────────────────────────────────
+      page.drawText('SHIP TO', { x: ML, y, size: 7, font: bold, color: rgb(0, 0, 0) });
+      y -= 3.5 * MM;
+
+      const phone = sa.phone || c.phone || '';
+      const addrLines = [
+        sa.name, sa.company, sa.address1, sa.address2,
+        [sa.city, sa.province, sa.zip].filter(Boolean).join(', '),
+        sa.country, phone,
+      ].filter(Boolean);
+
+      for (const line of addrLines) {
+        page.drawText(tr(line, CW, regular, 8.5), { x: ML, y, size: 8.5, font: regular, color: rgb(0, 0, 0) });
+        y -= 4 * MM;
+      }
+      y -= 1 * MM;
+
+      page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
+      y -= 4 * MM;
+
+      // ── Items ─────────────────────────────────────────────────
+      page.drawText('ITEMS', { x: ML, y, size: 7, font: bold, color: rgb(0, 0, 0) });
+      page.drawText('QTY', { x: MR - bold.widthOfTextAtSize('QTY', 7), y, size: 7, font: bold, color: rgb(0, 0, 0) });
+      y -= 3.5 * MM;
+
+      const lineItems = order.line_items || [];
+      const totalQty = lineItems.reduce((s, li) => s + (li.quantity || 1), 0);
+      for (const li of lineItems) {
+        const title = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
+        const qtyStr = `${li.quantity}/${totalQty}`;
+        const qw = regular.widthOfTextAtSize(qtyStr, 8);
+        page.drawText(tr(title, CW - qw - 3 * MM, regular, 8), { x: ML, y, size: 8, font: regular, color: rgb(0, 0, 0) });
+        page.drawText(qtyStr, { x: MR - qw, y, size: 8, font: regular, color: rgb(0, 0, 0) });
+        y -= 4 * MM;
+      }
+
+      if (order.note) {
+        page.drawText(tr(`Note: ${order.note}`, CW, regular, 7), { x: ML, y, size: 7, font: regular, color: rgb(0.6, 0.3, 0) });
+        y -= 3.5 * MM;
+      }
+      y -= 1 * MM;
+
+      page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.5, color: rgb(0, 0, 0) });
+      y -= 3.5 * MM;
+
+      // ── UK Plant Passport ─────────────────────────────────────
+      page.drawText('UK Plant Passport  A Variety: see packet/label  B 100561  D GB', {
+        x: ML, y, size: 6.5, font: regular, color: rgb(0, 0, 0),
+      });
+      y -= 4 * MM;
+
+      page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.25, color: rgb(0.7, 0.7, 0.7) });
+      y -= 3.5 * MM;
+
+      // ── Footer ────────────────────────────────────────────────
+      for (const line of [storeName, storeAddr, `${storeEmail}  |  ${storeWebsite}`, `EORI No: ${storeEori}`]) {
+        const lw = regular.widthOfTextAtSize(line, 6);
+        page.drawText(tr(line, CW, regular, 6), {
+          x: ML + (CW - Math.min(lw, CW)) / 2, y,
+          size: 6, font: regular, color: rgb(0.45, 0.45, 0.45),
+        });
+        y -= 3.2 * MM;
+      }
+    } // end copy loop
+  } // end order loop
 
   return pdfDoc.save();
 }
@@ -1073,7 +1050,7 @@ router.post('/fulfill', authenticateToken, async (req, res) => {
   try {
     const { orderIds = [], notifyCustomer = true } = req.body;
     const results = await markOrdersFulfilled(orderIds, notifyCustomer);
-    
+
     // Sync updated fulfilled orders into DB
     for (const result of results) {
       if (result.success) {

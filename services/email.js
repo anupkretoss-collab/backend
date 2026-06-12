@@ -1,10 +1,27 @@
 import nodemailer from 'nodemailer';
+import { existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-const STORE_NAME    = process.env.STORE_NAME    || 'South Devon Chilli Farm';
-const STORE_EMAIL   = process.env.STORE_EMAIL   || 'orders@sdcf.co.uk';
-const STORE_WEBSITE = process.env.STORE_WEBSITE || 'https://southdevonchillifarm.co.uk';
-const STORE_ADDRESS = process.env.STORE_ADDRESS || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
-const STORE_EORI    = process.env.STORE_EORI    || 'GB885490630200';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const STORE_NAME    = process.env.STORE_NAME     || 'South Devon Chilli Farm';
+const STORE_EMAIL   = process.env.STORE_EMAIL    || 'orders@sdcf.co.uk';
+const STORE_WEBSITE = process.env.STORE_WEBSITE  || 'https://southdevonchillifarm.co.uk';
+const STORE_ADDRESS = process.env.STORE_ADDRESS  || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
+const STORE_EORI    = process.env.STORE_EORI     || 'GB885490630200';
+
+// Logo: place any image file at backend/assets/logo.png (or .jpg / .gif)
+function getLogoAttachment() {
+  const exts = ['png', 'jpg', 'jpeg', 'gif', 'svg'];
+  for (const ext of exts) {
+    const p = join(__dirname, '..', 'assets', `logo.${ext}`);
+    if (existsSync(p)) {
+      return { path: p, cid: 'store-logo', filename: `logo.${ext}` };
+    }
+  }
+  return null;
+}
 
 let _transporter = null;
 
@@ -26,7 +43,7 @@ export function isConfigured() {
   return Boolean(process.env.EMAIL_USER && process.env.EMAIL_PASS);
 }
 
-function buildEmailHtml(order, trackingInfo) {
+function buildEmailHtml(order, trackingInfo, hasLogo = false) {
   const c  = order.customer || {};
   const sa = order.shipping_address || {};
   const firstName = c.first_name || sa.name?.split(' ')[0] || 'Customer';
@@ -38,15 +55,24 @@ function buildEmailHtml(order, trackingInfo) {
     ? STORE_WEBSITE
     : `https://${STORE_WEBSITE}`;
 
-  const itemsHtml = (order.line_items || []).map(li => `
+  const itemsHtml = (order.line_items || []).map(li => {
+    const imgSrc = li.image?.src || li.image_url || '';
+    const title = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ' — ' + li.variant_title : '');
+    return `
     <tr>
-      <td style="padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:14px;color:#333;">
-        ${li.title}${li.variant_title && li.variant_title !== 'Default Title' ? ' — ' + li.variant_title : ''}
+      <td style="padding:12px 0;border-bottom:1px solid #f0f0f0;vertical-align:middle;">
+        <table cellpadding="0" cellspacing="0"><tr>
+          ${imgSrc ? `<td style="padding-right:12px;vertical-align:middle;">
+            <img src="${imgSrc}" width="48" height="48" style="border-radius:4px;object-fit:cover;display:block;" alt="">
+          </td>` : ''}
+          <td style="vertical-align:middle;font-size:14px;color:#333;">${title}</td>
+        </tr></table>
       </td>
-      <td style="padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:14px;color:#333;text-align:right;white-space:nowrap;">
+      <td style="padding:12px 0;border-bottom:1px solid #f0f0f0;font-size:14px;color:#333;text-align:right;white-space:nowrap;vertical-align:middle;">
         × ${li.quantity}
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   const trackingHtml = trackingInfo?.trackingNumber ? `
     <div style="margin:15px 0;padding:12px 16px;background:#f0f9f0;border-left:3px solid #4caf50;border-radius:4px;">
@@ -77,8 +103,12 @@ function buildEmailHtml(order, trackingInfo) {
         <td style="padding:20px 30px;border-bottom:2px solid #cc0000;">
           <table width="100%" cellpadding="0" cellspacing="0">
             <tr>
-              <td style="font-size:18px;font-weight:bold;color:#cc0000;">${STORE_NAME}</td>
-              <td align="right" style="font-size:13px;color:#888;font-weight:500;">ORDER #${order.order_number}</td>
+              <td style="vertical-align:middle;">
+                ${hasLogo
+                  ? `<img src="cid:store-logo" alt="${STORE_NAME}" height="52" style="display:block;max-width:160px;">`
+                  : `<span style="font-size:18px;font-weight:bold;color:#cc0000;">${STORE_NAME}</span>`}
+              </td>
+              <td align="right" style="font-size:13px;color:#888;font-weight:500;vertical-align:middle;">ORDER #${order.order_number}</td>
             </tr>
           </table>
         </td>
@@ -112,15 +142,21 @@ function buildEmailHtml(order, trackingInfo) {
         </p>
 
         <!-- Items -->
-        <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #eee;">
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-bottom:1px solid #eee;padding-top:40px;">
           <tr><td style="padding:20px 0 10px;">
             <p style="margin:0;font-size:16px;font-weight:700;color:#111;">Items in this shipment</p>
           </td></tr>
           ${itemsHtml}
         </table>
 
-        <!-- Delivery notes -->
+        <!-- Repeat confirmation -->
         <p style="font-size:14px;color:#555;line-height:1.7;margin:20px 0 12px;">
+          Your order is on its way. Thank you for choosing us and we hope you enjoy our products.
+          If there are any issues with your order, please reply to this email address.
+        </p>
+
+        <!-- Delivery notes -->
+        <p style="font-size:14px;color:#555;line-height:1.7;margin:0 0 12px;">
           If you have selected the &ldquo;Collect From Farm&rdquo; shipping option then this is now
           ready to be collected from our customer collection box at the farm shop.
         </p>
@@ -186,11 +222,15 @@ export async function sendOrderNotification(order, trackingInfo = null) {
   const fromAddress = process.env.EMAIL_FROM
     || `"${STORE_NAME}" <${process.env.EMAIL_USER}>`;
 
+  const logoAttachment = getLogoAttachment();
+  const attachments = logoAttachment ? [logoAttachment] : [];
+
   const info = await transporter.sendMail({
     from: fromAddress,
     to: `"${toName}" <${toEmail}>`,
     subject: `Your order #${order.order_number} is on its way! 🌶️`,
-    html: buildEmailHtml(order, trackingInfo),
+    html: buildEmailHtml(order, trackingInfo, Boolean(logoAttachment)),
+    attachments,
   });
 
   return { messageId: info.messageId, toEmail };

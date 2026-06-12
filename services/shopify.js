@@ -493,11 +493,15 @@ export async function bulkRemoveTag(orderIds, tag) {
 }
 
 // ─── Mark orders as fulfilled ─────────────────────────────────────────────────
+// orders: array of { shopifyId, trackingNumber? } OR plain order ID strings/numbers (legacy)
 export async function markOrdersFulfilled(
-  orderIds,
+  orders,
   notifyCustomer = true,
   onProgress = () => { }
 ) {
+
+  console.log(orders, "order fullfulled");
+  console.log(notifyCustomer, "notifycustomer");
 
   const client = getClient();
 
@@ -512,12 +516,19 @@ export async function markOrdersFulfilled(
 
   let processed = 0;
 
-  for (const orderId of orderIds) {
+  // Normalise: accept both [{ shopifyId, trackingNumber }] and plain ID arrays
+  const orderEntries = orders.map(o =>
+    typeof o === 'object' && o.shopifyId
+      ? o
+      : { shopifyId: String(o), trackingNumber: null }
+  );
+
+  for (const { shopifyId: orderId, trackingNumber } of orderEntries) {
 
     try {
 
       console.log(
-        `🚚 Processing fulfillment for ${orderId}`
+        `🚚 Processing fulfillment for ${orderId}${trackingNumber ? ` (${trackingNumber})` : ''}`
       );
 
       // ============================================
@@ -556,6 +567,20 @@ export async function markOrdersFulfilled(
           fulfillment_order_id: fo.id,
         }));
 
+      const fulfillmentPayload = {
+        notify_customer: notifyCustomer,
+        line_items_by_fulfillment_order,
+      };
+
+      // Include tracking info if available
+      if (trackingNumber) {
+        fulfillmentPayload.tracking_info = {
+          number: trackingNumber,
+          company: 'Royal Mail',
+          url: `https://www.royalmail.com/portal/rm/track?trackNumber=${trackingNumber}`,
+        };
+      }
+
       // ============================================
       // CREATE FULFILLMENT
       // ============================================
@@ -564,12 +589,7 @@ export async function markOrdersFulfilled(
         await client.post({
           path: 'fulfillments',
           data: {
-            fulfillment: {
-              notify_customer:
-                notifyCustomer,
-
-              line_items_by_fulfillment_order,
-            },
+            fulfillment: fulfillmentPayload,
           },
           type: 'application/json',
         });

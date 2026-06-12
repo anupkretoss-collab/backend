@@ -168,24 +168,35 @@ export async function createShipment(order, despatchDate) {
  */
 export async function getLabel(orderIdentifier) {
   // documentType=1 is required by the Click & Drop API v1
-  const { data } = await axios.get(`${BASE}/orders/${orderIdentifier}/label?documentType=1`, {
+  const resp = await axios.get(`${BASE}/orders/${orderIdentifier}/label?documentType=1`, {
     headers: { ...authHeaders(), Accept: 'application/pdf' },
     responseType: 'arraybuffer',
   });
-  return Buffer.from(data);
+  const ct = resp.headers['content-type'] || '';
+  if (!ct.includes('pdf') && !ct.includes('octet-stream')) {
+    // RM returned a non-PDF (e.g. JSON error) with HTTP 200 — surface the message
+    const bodyText = Buffer.from(resp.data).toString('utf8').slice(0, 300);
+    let detail = bodyText;
+    try { detail = JSON.parse(bodyText)?.message || bodyText; } catch { /* use raw */ }
+    throw new Error(`Royal Mail returned unexpected content (${ct}): ${detail}`);
+  }
+  return Buffer.from(resp.data);
 }
 
 /**
  * Merge an array of PDF Buffers into a single PDF Buffer using pdf-lib.
+ * copies: how many identical copies of each label to include (default 2 for double-copy printing).
  */
-export async function mergeLabels(pdfBuffers) {
+export async function mergeLabels(pdfBuffers, copies = 2) {
   const merged = await PDFDocument.create();
   for (const buf of pdfBuffers) {
     try {
       const src = await PDFDocument.load(buf);
       const indices = src.getPageIndices();
-      const pages = await merged.copyPages(src, indices);
-      pages.forEach(p => merged.addPage(p));
+      for (let c = 0; c < copies; c++) {
+        const pages = await merged.copyPages(src, indices);
+        pages.forEach(p => merged.addPage(p));
+      }
     } catch {
       // skip malformed/empty pages
     }
@@ -202,9 +213,14 @@ export async function createManifest(orderIdentifiers) {
   if (!orderIdentifiers?.length) {
     throw new Error('orderIdentifiers is required — pass the identifiers returned by the labelling step.');
   }
+  // Click & Drop expects integer order IDs; safely coerce numeric strings back to numbers
+  const ids = orderIdentifiers.map(id => {
+    const n = Number(id);
+    return Number.isFinite(n) && n > 0 ? n : id;
+  });
   const body = {
     carrierName: 'Royal Mail OBA',
-    orderIdentifiers: orderIdentifiers.map(Number),
+    orderIdentifiers: ids,
   };
   const { data } = await axios.post(`${BASE}/manifests`, body, {
     headers: authHeaders(),
