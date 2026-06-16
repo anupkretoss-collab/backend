@@ -8,6 +8,7 @@ import {
 } from '../services/shopify.js';
 import pool from '../services/db.js';
 import XLSX from 'xlsx-js-style';
+import { mergeLabels } from '../services/royalMail.js';
 
 const router = express.Router();
 
