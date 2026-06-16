@@ -3281,6 +3281,7 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
 
     // ── 6. S/17 packing slips (plain label area at bottom for physical label) ──
     let s17Pdf = null;
+    let s17Error = '';
     try {
       const processedRows = rows.filter(r => processedShopifyIds.includes(String(r.id)));
       const processedOrders = processedRows
