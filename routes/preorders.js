@@ -724,8 +724,7 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
   const storeName = process.env.STORE_NAME || 'South Devon Chilli Farm';
-  const rawAddr = process.env.STORE_ADDRESS || 'South Devon Chilli Farm, Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX, United Kingdom';
-  const storeAddr = rawAddr.startsWith(storeName) ? rawAddr.slice(storeName.length).replace(/^,\s*/, '') : rawAddr;
+  const storeAddr = process.env.STORE_ADDRESS || 'South Devon Chilli Farm, Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX, United Kingdom';
   const storeEmail = process.env.STORE_EMAIL || 'orders@southdevonchillifarm.co.uk';
   const storeWebsite = process.env.STORE_WEBSITE || 'southdevonchillifarm.co.uk';
   const storeEori = process.env.STORE_EORI || 'GB885490630200';
@@ -834,7 +833,6 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
     y -= 3 * MM;
 
     const hasEmbeddedLabel = labelMap.has(String(order.id));
-    const addrLines = storeAddr.split(',').map(s => s.trim()).filter(Boolean);
 
     // Label slot constants (shared by footer positioning and label embedding)
     const LABEL_LEFT   = 10 * MM;
@@ -850,7 +848,7 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
         'Thank you for shopping with us!',
         '',
         storeName,
-        ...addrLines,
+        storeAddr,
         storeEmail,
         storeWebsite,
         '',
@@ -909,6 +907,22 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
         const ph = 'AFFIX SHIPPING LABEL HERE';
         page.drawText(ph, { x: LABEL_LEFT + (LABEL_W - regular.widthOfTextAtSize(ph, 8)) / 2, y: LABEL_BOTTOM + LABEL_H / 2 - 4, size: 8, font: regular, color: rgb(0.7, 0.7, 0.7) });
       }
+    } else {
+      // Standalone packing slip — full footer in content flow
+      for (const line of ['Thank you for shopping with us!']) {
+        const lw = regular.widthOfTextAtSize(line, 7.5);
+        page.drawText(line, { x: ML + (CW - lw) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
+        y -= 3.8 * MM;
+      }
+      y -= 3.8 * MM;
+      for (const line of [storeName, storeAddr, storeEmail, storeWebsite]) {
+        const lw = regular.widthOfTextAtSize(line, 7.5);
+        page.drawText(line, { x: ML + (CW - lw) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
+        y -= 3.8 * MM;
+      }
+      y -= 3.8 * MM;
+      const eoriLine = `EORI No: ${storeEori}`;
+      page.drawText(eoriLine, { x: ML + (CW - regular.widthOfTextAtSize(eoriLine, 7.5)) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
     }
   }
 
