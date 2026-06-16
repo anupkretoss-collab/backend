@@ -6,9 +6,9 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const STORE_NAME    = process.env.STORE_NAME     || 'South Devon Chilli Farm';
-const STORE_EMAIL   = process.env.STORE_EMAIL    || 'orders@sdcf.co.uk';
+const STORE_EMAIL   = process.env.STORE_EMAIL    || 'orders@southdevonchillifarm.co.uk';
 const STORE_WEBSITE = process.env.STORE_WEBSITE  || 'https://southdevonchillifarm.co.uk';
-const STORE_ADDRESS = process.env.STORE_ADDRESS  || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
+const STORE_ADDRESS = process.env.STORE_ADDRESS  || 'South Devon Chilli Farm, Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX, United Kingdom';
 const STORE_EORI    = process.env.STORE_EORI     || 'GB885490630200';
 
 // Logo: place any image file at backend/assets/logo.png (or .jpg / .gif)

@@ -69,7 +69,7 @@ export async function createShipment(order, despatchDate) {
   const networkCode = getNetworkCode(order);
 
   const collectionPostcode = (process.env.STORE_POSTCODE || 'TQ7 4DX').replace(/\s/g, '');
-  const collectionAddr = (process.env.STORE_ADDRESS || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX').split(',');
+  const collectionAddr = (process.env.STORE_ADDRESS || 'South Devon Chilli Farm, Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX, United Kingdom').split(',');
 
   const payload = {
     jobId: null,

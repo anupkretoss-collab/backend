@@ -558,8 +558,8 @@ ${pages}
 
 export function buildS17Html(orders, shippingDate) {
   const storeName = process.env.STORE_NAME || 'South Devon Chilli Farm';
-  const storeAddr = process.env.STORE_ADDRESS || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
-  const storeEmail = process.env.STORE_EMAIL || 'orders@sdcf.co.uk';
+  const storeAddr = process.env.STORE_ADDRESS || 'South Devon Chilli Farm, Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX, United Kingdom';
+  const storeEmail = process.env.STORE_EMAIL || 'orders@southdevonchillifarm.co.uk';
   const storeWebsite = process.env.STORE_WEBSITE || 'southdevonchillifarm.co.uk';
   const storeEori = process.env.STORE_EORI || 'GB885490630200';
 
@@ -833,35 +833,39 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
     }
     y -= 3 * MM;
 
-    // Full footer — always shown regardless of whether a label is embedded below.
-    // The label area is positioned absolutely at the bottom of the page, so it
-    // does not conflict with the footer drawn in the flow above.
-    for (const line of ['Thank you for shopping with us!']) {
-      const lw = regular.widthOfTextAtSize(line, 7.5);
-      page.drawText(line, { x: ML + (CW - lw) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
-      y -= 3.8 * MM;
-    }
-    y -= 3.8 * MM;
-    const addrLines = storeAddr.split(',').map(s => s.trim()).filter(Boolean);
-    for (const line of [storeName, ...addrLines, storeEmail, storeWebsite]) {
-      const lw = regular.widthOfTextAtSize(line, 7.5);
-      page.drawText(line, { x: ML + (CW - lw) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
-      y -= 3.8 * MM;
-    }
-    y -= 3.8 * MM;
-    const eoriLine = `EORI No: ${storeEori}`;
-    page.drawText(eoriLine, { x: ML + (CW - regular.widthOfTextAtSize(eoriLine, 7.5)) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
-
     const hasEmbeddedLabel = labelMap.has(String(order.id));
-    if (hasEmbeddedLabel) {
-      // ── Integrated Shipping Label area (S/17: 100mm × 150mm, 10mm margins) ───
-      const LABEL_LEFT   = 10 * MM;
-      const LABEL_BOTTOM = 10 * MM;
-      const LABEL_W      = 100 * MM;
-      const LABEL_H      = 150 * MM;
-      const SEP_Y        = LABEL_BOTTOM + LABEL_H + 5 * MM; // separator 5mm above label
+    const addrLines = storeAddr.split(',').map(s => s.trim()).filter(Boolean);
 
-      // "Integrated Shipping Label" indicator text just above separator
+    // Label slot constants (shared by footer positioning and label embedding)
+    const LABEL_LEFT   = 10 * MM;
+    const LABEL_BOTTOM = 10 * MM;
+    const LABEL_W      = 100 * MM;
+    const LABEL_H      = 150 * MM;
+    const SEP_Y        = LABEL_BOTTOM + LABEL_H + 5 * MM; // 165 mm from bottom
+
+    if (hasEmbeddedLabel) {
+      // Footer anchored at a fixed absolute position just above the separator so
+      // it never overlaps the label slot, regardless of how much content is above.
+      const footerLines = [
+        'Thank you for shopping with us!',
+        '',
+        storeName,
+        ...addrLines,
+        storeEmail,
+        storeWebsite,
+        '',
+        `EORI No: ${storeEori}`,
+      ];
+      const LINE_H = 3.5 * MM;
+      let fy = SEP_Y + footerLines.length * LINE_H + 2 * MM;
+      for (const line of footerLines) {
+        if (!line) { fy -= LINE_H; continue; }
+        const lw = regular.widthOfTextAtSize(line, 7);
+        page.drawText(line, { x: ML + (CW - lw) / 2, y: fy, size: 7, font: regular, color: rgb(0.4, 0.4, 0.4) });
+        fy -= LINE_H;
+      }
+
+      // ── Integrated Shipping Label area (S/17: 100mm × 150mm, 10mm margins) ───
       const sepText = '>>  INTEGRATED SHIPPING LABEL  <<';
       const stw = regular.widthOfTextAtSize(sepText, 7);
       page.drawText(sepText, {
@@ -875,8 +879,8 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
       let dX = 0;
       while (dX < W) {
         page.drawLine({
-          start: { x: dX,                          y: SEP_Y },
-          end:   { x: Math.min(dX + dashLen, W),   y: SEP_Y },
+          start: { x: dX,                        y: SEP_Y },
+          end:   { x: Math.min(dX + dashLen, W), y: SEP_Y },
           thickness: 0.5,
           color: rgb(0.45, 0.45, 0.45),
         });
@@ -889,23 +893,18 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
         try {
           const [embeddedLabel] = await pdfDoc.embedPdf(labelBuf, [0]);
           const dims = embeddedLabel.size();
-          const scaleX = LABEL_W / dims.width;
-          const scaleY = LABEL_H / dims.height;
-          const scale  = Math.min(scaleX, scaleY);
-          const drawW  = dims.width  * scale;
-          const drawH  = dims.height * scale;
-          // Centre within the slot horizontally; align to bottom margin vertically
+          const scale = Math.min(LABEL_W / dims.width, LABEL_H / dims.height);
+          const drawW = dims.width  * scale;
+          const drawH = dims.height * scale;
           const drawX = LABEL_LEFT + (LABEL_W - drawW) / 2;
           const drawY = LABEL_BOTTOM + (LABEL_H - drawH) / 2;
           page.drawPage(embeddedLabel, { x: drawX, y: drawY, width: drawW, height: drawH });
         } catch (_e) {
-          // Fallback placeholder if embed fails
           page.drawRectangle({ x: LABEL_LEFT, y: LABEL_BOTTOM, width: LABEL_W, height: LABEL_H, borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 0.5 });
           const ph = 'SHIPPING LABEL';
           page.drawText(ph, { x: LABEL_LEFT + (LABEL_W - regular.widthOfTextAtSize(ph, 9)) / 2, y: LABEL_BOTTOM + LABEL_H / 2 - 4, size: 9, font: regular, color: rgb(0.7, 0.7, 0.7) });
         }
       } else {
-        // No label buffer — draw placeholder for manual label application
         page.drawRectangle({ x: LABEL_LEFT, y: LABEL_BOTTOM, width: LABEL_W, height: LABEL_H, borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 0.5 });
         const ph = 'AFFIX SHIPPING LABEL HERE';
         page.drawText(ph, { x: LABEL_LEFT + (LABEL_W - regular.widthOfTextAtSize(ph, 8)) / 2, y: LABEL_BOTTOM + LABEL_H / 2 - 4, size: 8, font: regular, color: rgb(0.7, 0.7, 0.7) });
@@ -934,8 +933,8 @@ export async function buildRecordPdf(orders) {
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
   const storeName = process.env.STORE_NAME || 'South Devon Chilli Farm';
-  const storeAddr = process.env.STORE_ADDRESS || 'Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX';
-  const storeEmail = process.env.STORE_EMAIL || 'orders@sdcf.co.uk';
+  const storeAddr = process.env.STORE_ADDRESS || 'South Devon Chilli Farm, Wigford Cross, Loddiswell, Kingsbridge TQ7 4DX, United Kingdom';
+  const storeEmail = process.env.STORE_EMAIL || 'orders@southdevonchillifarm.co.uk';
   const storeWebsite = process.env.STORE_WEBSITE || 'southdevonchillifarm.co.uk';
   const storeEori = process.env.STORE_EORI || 'GB885490630200';
 
@@ -1025,10 +1024,12 @@ export async function buildRecordPdf(orders) {
       y -= 3.5 * MM;
 
       // ── UK Plant Passport ─────────────────────────────────────
-      page.drawText('UK Plant Passport  A Variety: see packet/label  B 100561  D GB', {
-        x: ML, y, size: 6.5, font: regular, color: rgb(0, 0, 0),
-      });
-      y -= 4 * MM;
+      page.drawText('UK Plant Passport', { x: ML, y, size: 6.5, font: bold, color: rgb(0, 0, 0) });
+      y -= 3.5 * MM;
+      for (const line of ['A Variety: see packet/label', 'B 100561', 'C', 'D GB', 'E']) {
+        page.drawText(line, { x: ML, y, size: 6.5, font: regular, color: rgb(0, 0, 0) });
+        y -= 3.5 * MM;
+      }
 
       page.drawLine({ start: { x: ML, y }, end: { x: MR, y }, thickness: 0.25, color: rgb(0.7, 0.7, 0.7) });
       y -= 3.5 * MM;
