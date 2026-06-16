@@ -3059,7 +3059,7 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
       });
     }
 
-    const mergedPdf = await mergeLabels(pdfBuffers);
+    const mergedPdf = await mergeLabels(pdfBuffers, 1);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="royal_mail_labels_${date}.pdf"`);
     res.setHeader('X-Shipment-Count', String(pdfBuffers.length));
@@ -3157,9 +3157,9 @@ router.post('/royal-mail-manifest', authenticateToken, async (req, res) => {
 // The Tracked 48 label is embedded in the S/17 peelable section — no separate label pages.
 router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
   try {
-    const { createShipment, listOrders, getLabel, mergeLabels, createManifest, getManifestLabel, isConfigured } = await import('../services/royalMail.js');
-    const { markOrdersFulfilled } = await import('../services/shopify.js');
-    const { buildRecordPdf, buildS17Pdf } = await import('./preorders.js');
+    const { createShipment, listOrders, getLabel, isConfigured } = await import('../services/royalMail.js');
+    const { markOrdersFulfilled, fetchOrder } = await import('../services/shopify.js');
+    const { buildS17Pdf } = await import('./preorders.js');
 
     if (!isConfigured()) return res.status(503).json({ message: 'ROYAL_MAIL_OBA_TOKEN not set in .env' });
 
@@ -3283,27 +3283,13 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
     let s17Pdf = null;
     try {
       const processedRows = rows.filter(r => processedShopifyIds.includes(String(r.id)));
-      const processedOrders = processedRows.map(r => typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data).filter(Boolean);
-      s17Pdf = Buffer.from(await buildS17Pdf(processedOrders));
+      const processedOrders = processedRows
+        .map(r => typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data)
+        .filter(Boolean);
+      s17Pdf = Buffer.from(await buildS17Pdf(processedOrders, labelMap));
     } catch (s17Err) {
-      console.warn('[FullProcess] S/17 PDF failed (non-fatal):', s17Err.message);
-    }
-
-    // ── 7. Manifest PDF ────────────────────────────────────────────────────────
-    let manifestPdf = null;
-    let manifestNumber = '';
-    let manifestError = '';
-    try {
-      const manifest = await createManifest(allIdentifiers);
-      manifestNumber = String(manifest.manifestNumber || '');
-      if (manifest.documentPdf) {
-        manifestPdf = Buffer.from(manifest.documentPdf, 'base64');
-      } else if (manifest.manifests?.[0]) {
-        manifestPdf = await getManifestLabel(manifest.manifests[0]);
-      }
-    } catch (manifestErr) {
-      manifestError = manifestErr.message;
-      console.warn('[FullProcess] Manifest failed (non-fatal):', manifestErr.message);
+      s17Error = s17Err.message;
+      console.warn('[FullProcess] S/17 PDF failed:', s17Err.message);
     }
 
     // ── 8. Order records PDF ──────────────────────────────────────────────────
@@ -3320,7 +3306,7 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
 
     // ── 9. Merge all four sections into ONE PDF ────────────────────────────────
     // Order: Tracked 48 Labels → S/17 Packing Slips → Manifest → Order Records
-    const sections = [labelsPdf, s17Pdf, manifestPdf, recordsPdf].filter(Boolean);
+    const sections = [labelsPdf, s17Pdf, recordsPdf].filter(Boolean);
     const finalPdf = await mergeLabels(sections, 1);
 
     // ── 10. Auto-fulfill in Shopify + send notification email ────────────────
@@ -3330,7 +3316,6 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
     const fulfillErrors = [];
     if (processedShopifyIds.length) {
       try {
-        // Build a map: DB row id → { shopifyApiId, trackingNumber, row }
         const dbToApiId = new Map();
         for (const row of rows) {
           if (!processedShopifyIds.includes(String(row.id))) continue;
@@ -3345,15 +3330,29 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
 
         const fulfillRes = await markOrdersFulfilled(ordersToFulfill, true);
         const fulfilled = fulfillRes.results?.filter(r => r.success) || [];
-        const failed    = fulfillRes.results?.filter(r => !r.success) || [];
-        fulfilledCount  = fulfilled.length;
+        const failed = fulfillRes.results?.filter(r => !r.success) || [];
+        fulfilledCount = fulfilled.length;
         failed.forEach(f => fulfillErrors.push(`${f.id}: ${f.error}`));
 
-        // Send custom notification email for every successfully fulfilled order
+        // Sync fulfillment status back to local DB so the app reflects Shopify's state
+        const fulfilledApiIds = new Set(fulfilled.map(f => String(f.id)));
+        console.log(fulfilledApiIds, "fulfilledApiIds");
+        for (const { shopifyApiId, row } of dbToApiId.values()) {
+          if (!fulfilledApiIds.has(shopifyApiId)) continue;
+          try {
+            const updatedOrder = await fetchOrder(shopifyApiId);
+            if (updatedOrder) await upsertOrder(updatedOrder);
+          } catch (dbSyncErr) {
+            console.warn(`[FullProcess] DB sync failed for ${row.order_number}:`, dbSyncErr.message);
+          }
+        }
+
+        console.log(fulfilled, "fulfilled");
+
+        // Send notification emails for fulfilled orders
         if (fulfilled.length) {
           const { sendOrderNotification, isConfigured: emailConfigured } = await import('../services/email.js');
           if (emailConfigured()) {
-            const fulfilledApiIds = new Set(fulfilled.map(f => String(f.id)));
             for (const { shopifyApiId, raw, row } of dbToApiId.values()) {
               if (!fulfilledApiIds.has(shopifyApiId)) continue;
               try {
@@ -3373,7 +3372,7 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
       }
     }
 
-    // ── 11. Send combined PDF ─────────────────────────────────────────────────
+    // ── 7. Return S/17 integrated label PDF ──────────────────────────────────
     const date = despatchDate || new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="royal_mail_${date}.pdf"`);
@@ -3382,12 +3381,9 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
     res.setHeader('X-Processed-Shopify-Ids', processedShopifyIds.join(','));
     res.setHeader('X-Tracking-Numbers', JSON.stringify(trackingNumbers));
     res.setHeader('X-Fulfilled-Count', String(fulfilledCount));
-    res.setHeader('X-Manifest-Number', manifestNumber);
     res.setHeader('X-Has-Labels', labelsPdf ? '1' : '0');
     res.setHeader('X-Has-S17', s17Pdf ? '1' : '0');
-    res.setHeader('X-Has-Manifest', manifestPdf ? '1' : '0');
     res.setHeader('X-Has-Records', recordsPdf ? '1' : '0');
-    if (manifestError) res.setHeader('X-Manifest-Error', manifestError.slice(0, 300));
     if (recordsError) res.setHeader('X-Records-Error', recordsError.slice(0, 300));
     if (failedOrders.length) res.setHeader('X-Failed-Orders', failedOrders.map(r => r.orderNumber).join(','));
     if (fulfillErrors.length) res.setHeader('X-Fulfill-Errors', fulfillErrors.join(' | ').slice(0, 500));
