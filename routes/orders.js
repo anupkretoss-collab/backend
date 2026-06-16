@@ -9,6 +9,7 @@ import {
 import pool from '../services/db.js';
 import XLSX from 'xlsx-js-style';
 import { mergeLabels } from '../services/royalMail.js';
+import { buildRecordPdf } from './preorders.js';
 
 const router = express.Router();
 
@@ -3158,9 +3159,9 @@ router.post('/royal-mail-manifest', authenticateToken, async (req, res) => {
 // The Tracked 48 label is embedded in the S/17 peelable section — no separate label pages.
 router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
   try {
-    const { createShipment, listOrders, getLabel, isConfigured } = await import('../services/royalMail.js');
+    const { createShipment, listOrders, getLabel, mergeLabels, isConfigured } = await import('../services/royalMail.js');
     const { markOrdersFulfilled, fetchOrder } = await import('../services/shopify.js');
-    const { buildS17Pdf } = await import('./preorders.js');
+    const { buildS17Pdf, buildRecordPdf } = await import('./preorders.js');
 
     if (!isConfigured()) return res.status(503).json({ message: 'ROYAL_MAIL_OBA_TOKEN not set in .env' });
 
@@ -3275,7 +3276,7 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
     // ── 5. Tracked 48 labels PDF (2 copies each) ──────────────────────────────
     let labelsPdf = null;
     try {
-      labelsPdf = await mergeLabels(labelBuffers, 2);
+      labelsPdf = await mergeLabels(labelBuffers, 1);
     } catch (labErr) {
       console.warn('[FullProcess] Labels merge failed (non-fatal):', labErr.message);
     }

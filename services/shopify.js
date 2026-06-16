@@ -449,7 +449,7 @@ export async function bulkTagOrders(
 
     onProgress({
       progress: Math.round(
-        (processed / orderIds.length) * 100
+        (processed / orderEntries.length) * 100
       ),
       completed:
         results.filter(r => r.success).length,
@@ -657,7 +657,7 @@ export async function markOrdersFulfilled(
 
     onProgress({
       progress: Math.round(
-        (processed / orderIds.length) * 100
+        (processed / orderEntries.length) * 100
       ),
       completed:
         results.filter(r => r.success).length,
@@ -669,7 +669,7 @@ export async function markOrdersFulfilled(
     // RATE LIMIT PROTECTION
     // ============================================
 
-    if (orderIds.length > 1) {
+    if (orderEntries.length > 1) {
       await sleep(5000);
     }
   }

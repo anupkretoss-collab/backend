@@ -866,7 +866,7 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
       const SEP_Y        = LABEL_BOTTOM + LABEL_H + 5 * MM; // separator 5mm above label
 
       // "Integrated Shipping Label" indicator text just above separator
-      const sepText = '▼  INTEGRATED SHIPPING LABEL  ▼';
+      const sepText = '>>  INTEGRATED SHIPPING LABEL  <<';
       const stw = regular.widthOfTextAtSize(sepText, 7);
       page.drawText(sepText, {
         x: ML + (CW - stw) / 2, y: SEP_Y + 2 * MM,
