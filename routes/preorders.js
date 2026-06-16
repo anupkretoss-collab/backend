@@ -833,31 +833,27 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
     }
     y -= 3 * MM;
 
-    // Footer — compact when a shipping label will be embedded below, full otherwise
+    // Full footer — always shown regardless of whether a label is embedded below.
+    // The label area is positioned absolutely at the bottom of the page, so it
+    // does not conflict with the footer drawn in the flow above.
+    for (const line of ['Thank you for shopping with us!']) {
+      const lw = regular.widthOfTextAtSize(line, 7.5);
+      page.drawText(line, { x: ML + (CW - lw) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
+      y -= 3.8 * MM;
+    }
+    y -= 3.8 * MM;
+    const addrLines = storeAddr.split(',').map(s => s.trim()).filter(Boolean);
+    for (const line of [storeName, ...addrLines, storeEmail, storeWebsite]) {
+      const lw = regular.widthOfTextAtSize(line, 7.5);
+      page.drawText(line, { x: ML + (CW - lw) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
+      y -= 3.8 * MM;
+    }
+    y -= 3.8 * MM;
+    const eoriLine = `EORI No: ${storeEori}`;
+    page.drawText(eoriLine, { x: ML + (CW - regular.widthOfTextAtSize(eoriLine, 7.5)) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
+
     const hasEmbeddedLabel = labelMap.has(String(order.id));
-
-    if (!hasEmbeddedLabel) {
-      // Full footer for standalone packing slips
-      for (const line of ['Thank you for shopping with us!']) {
-        const lw = regular.widthOfTextAtSize(line, 7.5);
-        page.drawText(line, { x: ML + (CW - lw) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
-        y -= 3.8 * MM;
-      }
-      y -= 3.8 * MM;
-      for (const line of [storeName, storeAddr, storeEmail, storeWebsite]) {
-        const lw = regular.widthOfTextAtSize(line, 7.5);
-        page.drawText(line, { x: ML + (CW - lw) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
-        y -= 3.8 * MM;
-      }
-      y -= 3.8 * MM;
-      const eoriLine = `EORI No: ${storeEori}`;
-      page.drawText(eoriLine, { x: ML + (CW - regular.widthOfTextAtSize(eoriLine, 7.5)) / 2, y, size: 7.5, font: regular, color: rgb(0.4, 0.4, 0.4) });
-    } else {
-      // Compact single-line footer — label takes the lower portion of this page
-      const compactFooter = `${storeName}  |  EORI No: ${storeEori}`;
-      const cfw = regular.widthOfTextAtSize(compactFooter, 7);
-      page.drawText(compactFooter, { x: ML + (CW - cfw) / 2, y, size: 7, font: regular, color: rgb(0.4, 0.4, 0.4) });
-
+    if (hasEmbeddedLabel) {
       // ── Integrated Shipping Label area (S/17: 100mm × 150mm, 10mm margins) ───
       const LABEL_LEFT   = 10 * MM;
       const LABEL_BOTTOM = 10 * MM;
