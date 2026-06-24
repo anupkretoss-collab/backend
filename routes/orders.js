@@ -3309,7 +3309,8 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
 
     // ── 9. Merge all four sections into ONE PDF ────────────────────────────────
     // Order: Tracked 48 Labels → S/17 Packing Slips → Manifest → Order Records
-    const sections = [labelsPdf, s17Pdf, recordsPdf].filter(Boolean);
+    // const sections = [labelsPdf, s17Pdf, recordsPdf].filter(Boolean);
+    const sections = [s17Pdf].filter(Boolean);
     const finalPdf = await mergeLabels(sections, 1);
 
     // ── 10. Auto-fulfill in Shopify + send notification email ────────────────
@@ -3425,6 +3426,104 @@ router.post('/shipping-csv', authenticateToken, async (req, res) => {
     res.send(csv);
   } catch (err) {
     console.error('shipping-csv error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─── POST /api/orders/royal-mail-excel ───────────────────────────────────────
+// Body: { orderIds: [] }
+router.post('/royal-mail-excel', authenticateToken, async (req, res) => {
+  try {
+    const { orderIds = [] } = req.body;
+    if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
+
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT raw_data FROM orders WHERE id IN (${placeholders})`,
+      orderIds
+    );
+
+    const orders = rows
+      .map(r => (typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data))
+      .filter(Boolean);
+
+    const headers = [
+      'Order ID', 'E-mail', 'Shipping: first name', 'Shipping: last name',
+      'Shipping Address', 'Shipping: address2', 'Shipping: city',
+      'Shipping: state', 'Shipping: country', 'Shipping: zipcode',
+      'Notes', 'Phone', 'Weight in g (to convert)', 'Weight', 'Package Size', 'Service Code', 'Yes',
+    ];
+
+    const dataRows = orders.map(o => {
+      const a = o.shipping_address || {};
+      const c = o.customer || {};
+      const first = c.first_name || (a.name || '').split(' ').slice(0, -1).join(' ') || '';
+      const last  = c.last_name  || (a.name || '').split(' ').slice(-1)[0] || '';
+      const totalG = (o.line_items || []).reduce((sum, li) => {
+        return sum + (li.grams > 0 ? li.grams : 999) * (li.quantity || 1);
+      }, 0) || 999;
+      const tags = (o.tags || '').toLowerCase();
+      const serviceCode = tags.includes('royal-mail-letter') ? 'CRL1' : 'TPS48';
+      return [
+        `#${o.order_number}`,
+        c.email || o.email || '',
+        first,
+        last,
+        a.address1 || '',
+        a.address2 || '',
+        a.city || '',
+        a.province || '',
+        a.country || 'United Kingdom',
+        a.zip || '',
+        o.note || '',
+        a.phone || c.phone || '',
+        totalG,
+        parseFloat((totalG / 1000).toFixed(2)),
+        'Parcel',
+        serviceCode,
+        'Yes',
+      ];
+    });
+
+    const wsData = [headers, ...dataRows];
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+    // Column widths
+    ws['!cols'] = [
+      { wch: 10 }, { wch: 28 }, { wch: 14 }, { wch: 14 },
+      { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 12 },
+      { wch: 16 }, { wch: 12 }, { wch: 16 }, { wch: 16 },
+      { wch: 20 }, { wch: 8 }, { wch: 12 }, { wch: 14 }, { wch: 5 },
+    ];
+
+    // Style header row
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const cell = XLSX.utils.encode_cell({ r: 0, c: C });
+      if (!ws[cell]) continue;
+      ws[cell].s = {
+        font: { bold: true, sz: 10 },
+        fill: { fgColor: { rgb: 'D9E2F3' } },
+        alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+        border: {
+          top: { style: 'thin', color: { rgb: '000000' } },
+          bottom: { style: 'thin', color: { rgb: '000000' } },
+          left: { style: 'thin', color: { rgb: '000000' } },
+          right: { style: 'thin', color: { rgb: '000000' } },
+        },
+      };
+    }
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'DPD Orders');
+
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const filename = `Royal_Mail_Orders_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (err) {
+    console.error('royal-mail-excel error:', err);
     res.status(500).json({ message: err.message });
   }
 });

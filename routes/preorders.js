@@ -863,27 +863,6 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
         fy -= LINE_H;
       }
 
-      // ── Integrated Shipping Label area (S/17: 100mm × 150mm, 10mm margins) ───
-      const sepText = '>>  INTEGRATED SHIPPING LABEL  <<';
-      const stw = regular.widthOfTextAtSize(sepText, 7);
-      page.drawText(sepText, {
-        x: ML + (CW - stw) / 2, y: SEP_Y + 2 * MM,
-        size: 7, font: regular, color: rgb(0.45, 0.45, 0.45),
-      });
-
-      // Dashed separator line spanning full page width
-      const dashLen = 4 * MM;
-      const gapLen  = 2 * MM;
-      let dX = 0;
-      while (dX < W) {
-        page.drawLine({
-          start: { x: dX,                        y: SEP_Y },
-          end:   { x: Math.min(dX + dashLen, W), y: SEP_Y },
-          thickness: 0.5,
-          color: rgb(0.45, 0.45, 0.45),
-        });
-        dX += dashLen + gapLen;
-      }
 
       // Embed RM label PDF in the label slot, scaled to fit
       const labelBuf = labelMap.get(String(order.id));

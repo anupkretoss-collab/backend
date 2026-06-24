@@ -8,26 +8,39 @@ let _token = null;
 let _accountNumber = null;
 let _tokenExpiry = 0;
 
+function _parseAccountFromJwt(jwt) {
+  try {
+    const payload = jwt.split('.')[1];
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return decoded.dpd_account || String(decoded.user_id || '').split('_')[1] || null;
+  } catch {
+    return null;
+  }
+}
+
 async function authenticate() {
   if (_token && Date.now() < _tokenExpiry) {
     return { token: _token, accountNumber: _accountNumber };
   }
 
+  const basic = Buffer.from(
+    `${process.env.DPD_USERNAME}:${process.env.DPD_PASSWORD}`
+  ).toString('base64');
+
   const { data } = await axios.post(
     `${BASE}/user/?action=login`,
-    { username: process.env.DPD_USERNAME, password: process.env.DPD_PASSWORD },
-    { headers: { 'Content-Type': 'application/json', Accept: 'application/json' } }
+    {},
+    { headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Basic ${basic}` } }
   );
 
-  _token = data.data?.authToken;
-  _accountNumber = data.data?.accounts?.[0]?.accountNumber;
+  _token = data.data?.geoSession;
+  _accountNumber = _parseAccountFromJwt(_token);
   _tokenExpiry = Date.now() + 3 * 60 * 60 * 1000; // 3h
   return { token: _token, accountNumber: _accountNumber };
 }
 
 function authHeaders(token, accountNumber) {
   return {
-    Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
     Accept: 'application/json',
     GeoClient: `account/${accountNumber}`,
@@ -42,7 +55,7 @@ function getNetworkCode(order) {
   if (tags.includes('dpd-parcel')) {
     return process.env.DPD_PARCEL_NETWORK || '2^12';
   }
-  return process.env.DPD_EXPRESSPACK_NETWORK || '1^19';
+  return process.env.DPD_EXPRESSPACK_NETWORK || '2^17';
 }
 
 function getDpdServiceLabel(order) {
@@ -133,8 +146,8 @@ export async function createShipment(order, despatchDate) {
   });
 
   const detail = data.data?.consignmentDetail?.[0];
-  const consignmentNumber = detail?.consignmentNumber || data.data?.shipmentId;
-  const parcelNumber = detail?.parcel?.[0]?.parcelNumber || consignmentNumber;
+  const consignmentNumber = detail?.consignmentNumber || String(data.data?.shipmentId || '');
+  const parcelNumber = detail?.parcelNumbers?.[0] || consignmentNumber;
 
   return {
     consignmentNumber,
