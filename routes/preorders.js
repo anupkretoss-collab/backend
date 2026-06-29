@@ -834,11 +834,11 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
 
     const hasEmbeddedLabel = labelMap.has(String(order.id));
 
-    // Label slot constants (shared by footer positioning and label embedding)
-    const LABEL_LEFT   = 10 * MM;
-    const LABEL_BOTTOM = 10 * MM;
+    // Label slot constants — S/17 style: 100×150mm, bottom-right, 10mm margins
     const LABEL_W      = 100 * MM;
     const LABEL_H      = 150 * MM;
+    const LABEL_LEFT   = W - 10 * MM - LABEL_W;  // 10mm from right edge
+    const LABEL_BOTTOM = 10 * MM;
     const SEP_Y        = LABEL_BOTTOM + LABEL_H + 5 * MM; // 165 mm from bottom
 
     if (hasEmbeddedLabel) {
