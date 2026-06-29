@@ -806,10 +806,9 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
     y -= 4.5 * MM;
 
     const lineItems = order.line_items || [];
-    const totalQty = lineItems.reduce((s, li) => s + (li.quantity || 1), 0);
     for (const li of lineItems) {
       const title = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
-      const qtyStr = `${li.quantity} of ${totalQty}`;
+      const qtyStr = `${li.quantity} of ${li.quantity}`;
       const qtyW = regular.widthOfTextAtSize(qtyStr, 9);
       page.drawText(truncateText(title, CW - qtyW - 5 * MM, regular, 9), { x: ML, y, size: 9, font: regular, color: rgb(0, 0, 0) });
       page.drawText(qtyStr, { x: MR - qtyW, y, size: 9, font: regular, color: rgb(0, 0, 0) });
