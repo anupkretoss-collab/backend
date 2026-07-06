@@ -219,38 +219,45 @@ export async function getLabel(consignmentNumber, shipmentId) {
     if (buf.length > 100) { console.log(`[DPD] Label attempt 3 OK — ${buf.length} bytes`); return buf; }
   } catch (err) { logErr('Label attempt 3', err); }
 
-  // 4. GET /shipping/shipment/{shipmentId}/label — 406 means endpoint exists, try correct Accept headers
+  // 4. /shipping/shipment/{shipmentId}/label — 406 = endpoint exists, wrong Accept
   if (shipmentId) {
-    // 4a. Binary PDF
-    try {
-      console.log(`[DPD] Label attempt 4a: GET /shipping/shipment/${shipmentId}/label (binary PDF)`);
-      const { data } = await axios.get(`${BASE}/shipping/shipment/${shipmentId}/label`, {
-        headers: { ...headers, Accept: 'application/pdf' },
-        responseType: 'arraybuffer',
-      });
-      const buf = Buffer.from(data);
-      if (buf.length > 100) { console.log(`[DPD] Label attempt 4a OK — ${buf.length} bytes`); return buf; }
-    } catch (err) { logErr('Label attempt 4a', err); }
+    const sid = shipmentId;
+    const baseLabel = `${BASE}/shipping/shipment/${sid}/label`;
 
-    // 4b. With outputFormat=PDF query param
-    try {
-      console.log(`[DPD] Label attempt 4b: GET /shipping/shipment/${shipmentId}/label?outputFormat=PDF`);
-      const { data } = await axios.get(`${BASE}/shipping/shipment/${shipmentId}/label?outputFormat=PDF`, {
-        headers: { ...headers, Accept: 'application/pdf' },
-        responseType: 'arraybuffer',
-      });
-      const buf = Buffer.from(data);
-      if (buf.length > 100) { console.log(`[DPD] Label attempt 4b OK — ${buf.length} bytes`); return buf; }
-    } catch (err) { logErr('Label attempt 4b', err); }
+    const acceptFormats = [
+      { accept: '*/*',                          binary: true  },
+      { accept: 'application/pdf',              binary: true  },
+      { accept: 'application/octet-stream',     binary: true  },
+      { accept: 'application/json',             binary: false },
+      { accept: 'application/zpl',              binary: true  },
+    ];
 
-    // 4c. JSON response (base64 label in body)
-    try {
-      console.log(`[DPD] Label attempt 4c: GET /shipping/shipment/${shipmentId}/label (JSON)`);
-      const { data } = await axios.get(`${BASE}/shipping/shipment/${shipmentId}/label?outputFormat=PDF`, { headers });
-      console.log(`[DPD] Label attempt 4c JSON:`, JSON.stringify(data).slice(0, 500));
-      const b64 = data?.data?.label || data?.label || data?.data?.pdf || data?.pdf;
-      if (b64) return Buffer.from(b64, 'base64');
-    } catch (err) { logErr('Label attempt 4c', err); }
+    for (const fmt of acceptFormats) {
+      for (const qs of ['', '?outputFormat=PDF', '?outputFormat=ZPL', '?format=PDF']) {
+        const url = `${baseLabel}${qs}`;
+        try {
+          console.log(`[DPD] Label try: GET ${url}  Accept:${fmt.accept}`);
+          if (fmt.binary) {
+            const { data, headers: rh } = await axios.get(url, {
+              headers: { ...headers, Accept: fmt.accept },
+              responseType: 'arraybuffer',
+            });
+            const buf = Buffer.from(data);
+            console.log(`[DPD] Response content-type: ${rh['content-type']} | size: ${buf.length}`);
+            if (buf.length > 100) { console.log(`[DPD] Label OK — ${buf.length} bytes`); return buf; }
+          } else {
+            const { data: d } = await axios.get(url, { headers: { ...headers, Accept: fmt.accept } });
+            console.log(`[DPD] Response JSON:`, JSON.stringify(d).slice(0, 400));
+            const b64 = d?.data?.label || d?.label || d?.data?.pdf || d?.pdf;
+            if (b64) return Buffer.from(b64, 'base64');
+          }
+        } catch (err) {
+          logErr(`Label try ${url} (${fmt.accept})`, err);
+          // If we get anything other than 406/404, stop trying
+          if (err.response?.status && ![404, 406].includes(err.response.status)) break;
+        }
+      }
+    }
   }
 
   throw new Error('All label fetch attempts failed — check DPD API logs');
