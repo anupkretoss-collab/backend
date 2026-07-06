@@ -186,81 +186,51 @@ export async function getLabel(consignmentNumber, shipmentId) {
     console.warn(`[DPD] ${label}: ${err.response?.status} — ${body}`);
   };
 
-  // 1. POST /shipping/shipment/label  (body: consignmentNumber + outputFormat)
-  try {
-    console.log(`[DPD] Label attempt 1: POST /shipping/shipment/label`);
-    const { data } = await axios.post(
-      `${BASE}/shipping/shipment/label`,
-      { consignmentNumber, outputFormat: 'PDF' },
-      { headers }
-    );
-    console.log(`[DPD] Label attempt 1 JSON:`, JSON.stringify(data).slice(0, 300));
-    const b64 = data?.data?.label || data?.label;
-    if (b64) return Buffer.from(b64, 'base64');
-  } catch (err) { logErr('Label attempt 1', err); }
-
-  // 2. GET /shipping/shipment/label/{consignmentNumber} — JSON response (no Accept: pdf)
-  try {
-    console.log(`[DPD] Label attempt 2: GET /shipping/shipment/label/${consignmentNumber}`);
-    const { data } = await axios.get(`${BASE}/shipping/shipment/label/${consignmentNumber}`, { headers });
-    console.log(`[DPD] Label attempt 2 JSON:`, JSON.stringify(data).slice(0, 300));
-    const b64 = data?.data?.label || data?.label;
-    if (b64) return Buffer.from(b64, 'base64');
-  } catch (err) { logErr('Label attempt 2', err); }
-
-  // 3. GET /shipping/shipment/label/{consignmentNumber}?outputFormat=PDF — binary
-  try {
-    console.log(`[DPD] Label attempt 3: GET /shipping/shipment/label/${consignmentNumber}?outputFormat=PDF (binary)`);
-    const { data } = await axios.get(
-      `${BASE}/shipping/shipment/label/${consignmentNumber}?outputFormat=PDF`,
-      { headers: { ...headers, Accept: 'application/pdf' }, responseType: 'arraybuffer' }
-    );
-    const buf = Buffer.from(data);
-    if (buf.length > 100) { console.log(`[DPD] Label attempt 3 OK — ${buf.length} bytes`); return buf; }
-  } catch (err) { logErr('Label attempt 3', err); }
-
-  // 4. /shipping/shipment/{shipmentId}/label — 406 = endpoint exists, wrong Accept
+  // Correct endpoint is /shipping/shipment/{shipmentId}/label
+  // Default returns EPL (thermal format) — try PDF variants first
   if (shipmentId) {
-    const sid = shipmentId;
-    const baseLabel = `${BASE}/shipping/shipment/${sid}/label`;
+    const base = `${BASE}/shipping/shipment/${shipmentId}/label`;
 
-    const acceptFormats = [
-      { accept: '*/*',                          binary: true  },
-      { accept: 'application/pdf',              binary: true  },
-      { accept: 'application/octet-stream',     binary: true  },
-      { accept: 'application/json',             binary: false },
-      { accept: 'application/zpl',              binary: true  },
-    ];
-
-    for (const fmt of acceptFormats) {
-      for (const qs of ['', '?outputFormat=PDF', '?outputFormat=ZPL', '?format=PDF']) {
-        const url = `${baseLabel}${qs}`;
-        try {
-          console.log(`[DPD] Label try: GET ${url}  Accept:${fmt.accept}`);
-          if (fmt.binary) {
-            const { data, headers: rh } = await axios.get(url, {
-              headers: { ...headers, Accept: fmt.accept },
-              responseType: 'arraybuffer',
-            });
-            const buf = Buffer.from(data);
-            console.log(`[DPD] Response content-type: ${rh['content-type']} | size: ${buf.length}`);
-            if (buf.length > 100) { console.log(`[DPD] Label OK — ${buf.length} bytes`); return buf; }
-          } else {
-            const { data: d } = await axios.get(url, { headers: { ...headers, Accept: fmt.accept } });
-            console.log(`[DPD] Response JSON:`, JSON.stringify(d).slice(0, 400));
-            const b64 = d?.data?.label || d?.label || d?.data?.pdf || d?.pdf;
-            if (b64) return Buffer.from(b64, 'base64');
-          }
-        } catch (err) {
-          logErr(`Label try ${url} (${fmt.accept})`, err);
-          // If we get anything other than 406/404, stop trying
-          if (err.response?.status && ![404, 406].includes(err.response.status)) break;
+    // Try PDF output in various ways
+    for (const qs of ['?outputFormat=PDF', '?outputFormat=pdf', '?format=PDF', '?labelFormat=PDF', '?paperFormat=A4PDF']) {
+      try {
+        console.log(`[DPD] Label try PDF: GET ${base}${qs}`);
+        const { data, headers: rh } = await axios.get(`${base}${qs}`, {
+          headers: { ...headers, Accept: '*/*' },
+          responseType: 'arraybuffer',
+        });
+        const buf = Buffer.from(data);
+        const ct = rh['content-type'] || '';
+        console.log(`[DPD] content-type: ${ct} | size: ${buf.length}`);
+        // Accept only if it looks like PDF (starts with %PDF)
+        if (buf.length > 100 && buf.slice(0, 4).toString() === '%PDF') {
+          console.log(`[DPD] Got PDF — ${buf.length} bytes`);
+          return buf;
         }
-      }
+        console.log(`[DPD] Not PDF (got ${ct}), trying next param`);
+      } catch (err) { logErr(`Label PDF try ${qs}`, err); }
+    }
+
+    // Last resort: return whatever DPD gives (EPL/ZPL) — caller will get an error
+    // but at least we tried everything
+    try {
+      console.log(`[DPD] Label fallback: GET ${base} (accept any)`);
+      const { data, headers: rh } = await axios.get(base, {
+        headers: { ...headers, Accept: '*/*' },
+        responseType: 'arraybuffer',
+      });
+      const buf = Buffer.from(data);
+      const ct = rh['content-type'] || '';
+      console.log(`[DPD] Fallback content-type: ${ct} | size: ${buf.length}`);
+      if (buf.slice(0, 4).toString() === '%PDF') return buf;
+      throw new Error(`DPD returned ${ct} (not PDF). Label printing must be done from DPD portal → Shipment Review → Print Shipment.`);
+    } catch (err) {
+      if (err.message.includes('DPD returned')) throw err;
+      logErr('Label fallback', err);
     }
   }
 
-  throw new Error('All label fetch attempts failed — check DPD API logs');
+  throw new Error('Label download not available via API. Use DPD portal → Shipment Review → Print Shipment.');
 }
 
 /**
