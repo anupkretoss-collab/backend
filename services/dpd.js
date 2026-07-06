@@ -36,6 +36,7 @@ async function authenticate() {
   _token = data.data?.geoSession;
   _accountNumber = _parseAccountFromJwt(_token);
   _tokenExpiry = Date.now() + 3 * 60 * 60 * 1000; // 3h
+  console.log(`[DPD] Authenticated — accountNumber: ${_accountNumber}`);
   return { token: _token, accountNumber: _accountNumber };
 }
 
@@ -141,13 +142,20 @@ export async function createShipment(order, despatchDate) {
     ],
   };
 
+  console.log(`[DPD] Creating shipment for order #${order.order_number} | network: ${networkCode} | weight: ${weightKg}kg`);
+  console.log(`[DPD] Payload:`, JSON.stringify(payload, null, 2));
+
   const { data } = await axios.post(`${BASE}/shipping/shipment`, payload, {
     headers: authHeaders(token, accountNumber),
   });
 
+  console.log(`[DPD] Raw response for #${order.order_number}:`, JSON.stringify(data, null, 2));
+
   const detail = data.data?.consignmentDetail?.[0];
   const consignmentNumber = detail?.consignmentNumber || String(data.data?.shipmentId || '');
   const parcelNumber = detail?.parcelNumbers?.[0] || consignmentNumber;
+
+  console.log(`[DPD] Parsed — consignmentNumber: ${consignmentNumber} | parcelNumber: ${parcelNumber}`);
 
   return {
     consignmentNumber,
