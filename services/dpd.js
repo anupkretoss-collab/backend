@@ -151,13 +151,15 @@ export async function createShipment(order, despatchDate) {
 
   console.log(`[DPD] Raw response for #${order.order_number}:`, JSON.stringify(data, null, 2));
 
+  const shipmentId = String(data.data?.shipmentId || '');
   const detail = data.data?.consignmentDetail?.[0];
-  const consignmentNumber = detail?.consignmentNumber || String(data.data?.shipmentId || '');
+  const consignmentNumber = detail?.consignmentNumber || shipmentId;
   const parcelNumber = detail?.parcelNumbers?.[0] || consignmentNumber;
 
-  console.log(`[DPD] Parsed — consignmentNumber: ${consignmentNumber} | parcelNumber: ${parcelNumber}`);
+  console.log(`[DPD] Parsed — shipmentId: ${shipmentId} | consignmentNumber: ${consignmentNumber} | parcelNumber: ${parcelNumber}`);
 
   return {
+    shipmentId,
     consignmentNumber,
     trackingNumber: parcelNumber,
     status: 'created',
@@ -171,48 +173,77 @@ export async function createShipment(order, despatchDate) {
  * Fetch label PDF for a DPD consignment.
  * Returns a Buffer containing PDF bytes.
  */
-export async function getLabel(consignmentNumber) {
+export async function getLabel(consignmentNumber, shipmentId) {
   const { token, accountNumber } = await authenticate();
   const headers = authHeaders(token, accountNumber);
 
-  // Try endpoints in order until one works
-  const attempts = [
-    { url: `${BASE}/shipping/shipment/label/${consignmentNumber}?outputFormat=PDF`, binary: true },
-    { url: `${BASE}/shipping/label/${consignmentNumber}?outputFormat=PDF`, binary: true },
-    { url: `${BASE}/shipping/shipment/label/${consignmentNumber}`, binary: false },
-  ];
+  const logErr = (label, err) => {
+    const body = err.response?.data
+      ? Buffer.isBuffer(err.response.data)
+        ? err.response.data.toString('utf8').slice(0, 300)
+        : JSON.stringify(err.response.data).slice(0, 300)
+      : err.message;
+    console.warn(`[DPD] ${label}: ${err.response?.status} — ${body}`);
+  };
 
-  for (const attempt of attempts) {
+  // 1. POST /shipping/shipment/label  (body: consignmentNumber + outputFormat)
+  try {
+    console.log(`[DPD] Label attempt 1: POST /shipping/shipment/label`);
+    const { data } = await axios.post(
+      `${BASE}/shipping/shipment/label`,
+      { consignmentNumber, outputFormat: 'PDF' },
+      { headers }
+    );
+    console.log(`[DPD] Label attempt 1 JSON:`, JSON.stringify(data).slice(0, 300));
+    const b64 = data?.data?.label || data?.label;
+    if (b64) return Buffer.from(b64, 'base64');
+  } catch (err) { logErr('Label attempt 1', err); }
+
+  // 2. GET /shipping/shipment/label/{consignmentNumber} — JSON response (no Accept: pdf)
+  try {
+    console.log(`[DPD] Label attempt 2: GET /shipping/shipment/label/${consignmentNumber}`);
+    const { data } = await axios.get(`${BASE}/shipping/shipment/label/${consignmentNumber}`, { headers });
+    console.log(`[DPD] Label attempt 2 JSON:`, JSON.stringify(data).slice(0, 300));
+    const b64 = data?.data?.label || data?.label;
+    if (b64) return Buffer.from(b64, 'base64');
+  } catch (err) { logErr('Label attempt 2', err); }
+
+  // 3. GET /shipping/shipment/label/{consignmentNumber}?outputFormat=PDF — binary
+  try {
+    console.log(`[DPD] Label attempt 3: GET /shipping/shipment/label/${consignmentNumber}?outputFormat=PDF (binary)`);
+    const { data } = await axios.get(
+      `${BASE}/shipping/shipment/label/${consignmentNumber}?outputFormat=PDF`,
+      { headers: { ...headers, Accept: 'application/pdf' }, responseType: 'arraybuffer' }
+    );
+    const buf = Buffer.from(data);
+    if (buf.length > 100) { console.log(`[DPD] Label attempt 3 OK — ${buf.length} bytes`); return buf; }
+  } catch (err) { logErr('Label attempt 3', err); }
+
+  // 4. GET using shipmentId if available
+  if (shipmentId) {
     try {
-      console.log(`[DPD] Fetching label: GET ${attempt.url}`);
-      if (attempt.binary) {
-        const { data } = await axios.get(attempt.url, {
-          headers: { ...headers, Accept: 'application/pdf' },
-          responseType: 'arraybuffer',
-        });
-        const buf = Buffer.from(data);
-        if (buf.length > 100) {
-          console.log(`[DPD] Label fetched OK — ${buf.length} bytes`);
-          return buf;
-        }
-      } else {
-        // JSON response — label may be base64 encoded
-        const { data } = await axios.get(attempt.url, { headers });
-        console.log(`[DPD] Label JSON response:`, JSON.stringify(data).slice(0, 300));
-        const b64 = data?.data?.label || data?.label;
-        if (b64) return Buffer.from(b64, 'base64');
-      }
-    } catch (err) {
-      const body = err.response?.data
-        ? Buffer.isBuffer(err.response.data)
-          ? err.response.data.toString('utf8').slice(0, 300)
-          : JSON.stringify(err.response.data).slice(0, 300)
-        : err.message;
-      console.warn(`[DPD] Label attempt failed (${attempt.url}): ${err.response?.status} — ${body}`);
-    }
+      console.log(`[DPD] Label attempt 4: GET /shipping/shipment/${shipmentId}/label`);
+      const { data } = await axios.get(`${BASE}/shipping/shipment/${shipmentId}/label`, { headers });
+      console.log(`[DPD] Label attempt 4 JSON:`, JSON.stringify(data).slice(0, 300));
+      const b64 = data?.data?.label || data?.label;
+      if (b64) return Buffer.from(b64, 'base64');
+    } catch (err) { logErr('Label attempt 4', err); }
+
+    // 5. POST /shipping/shipment/label with shipmentId
+    try {
+      console.log(`[DPD] Label attempt 5: POST /shipping/shipment/label (shipmentId)`);
+      const { data } = await axios.post(
+        `${BASE}/shipping/shipment/label`,
+        { shipmentId, outputFormat: 'PDF' },
+        { headers }
+      );
+      console.log(`[DPD] Label attempt 5 JSON:`, JSON.stringify(data).slice(0, 300));
+      const b64 = data?.data?.label || data?.label;
+      if (b64) return Buffer.from(b64, 'base64');
+    } catch (err) { logErr('Label attempt 5', err); }
   }
 
-  throw new Error('All label fetch attempts failed — check logs for details');
+  throw new Error('All label fetch attempts failed — check DPD API logs');
 }
 
 /**

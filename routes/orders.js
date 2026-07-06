@@ -3875,20 +3875,26 @@ router.delete('/seed-test-order', authenticateToken, async (req, res) => {
 });
 
 // ─── POST /api/orders/dpd-labels ─────────────────────────────────────────────
-// Body: { consignmentNumbers: [] }
+// Body: { shipments: [{consignmentNumber, shipmentId}] }  OR legacy: { consignmentNumbers: [] }
 router.post('/dpd-labels', authenticateToken, async (req, res) => {
   try {
-    const { consignmentNumbers = [] } = req.body;
-    if (!consignmentNumbers.length) return res.status(400).json({ message: 'consignmentNumbers is required' });
+    // Support both new format (shipments[]) and legacy (consignmentNumbers[])
+    let shipments = req.body.shipments || [];
+    if (!shipments.length && req.body.consignmentNumbers?.length) {
+      shipments = req.body.consignmentNumbers.map(cn => ({ consignmentNumber: cn, shipmentId: null }));
+    }
+    if (!shipments.length) return res.status(400).json({ message: 'shipments is required' });
 
     const { getLabel, mergeLabels } = await import('../services/dpd.js');
 
     const pdfBuffers = [];
-    for (const cn of consignmentNumbers) {
+    for (const s of shipments) {
+      const cn = s.consignmentNumber;
+      const sid = s.shipmentId || null;
       // Retry up to 3 times with 2s delay
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const buf = await getLabel(cn);
+          const buf = await getLabel(cn, sid);
           if (buf && buf.length > 100) { pdfBuffers.push(buf); break; }
         } catch (err) {
           if (attempt === 2) console.warn(`Label fetch failed for ${cn}:`, err.message);
