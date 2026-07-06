@@ -3887,19 +3887,28 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
 
     const { getLabel, mergeLabels } = await import('../services/dpd.js');
 
+    // Pre-fetch order data for label generation
+    const orderMap = {};
+    const shopifyIds = shipments.map(s => s.shopifyOrderId).filter(Boolean);
+    if (shopifyIds.length) {
+      const ph = shopifyIds.map(() => '?').join(',');
+      const [orows] = await pool.query(`SELECT id, raw_data FROM orders WHERE id IN (${ph})`, shopifyIds);
+      for (const row of orows) {
+        const raw = typeof row.raw_data === 'string' ? JSON.parse(row.raw_data) : row.raw_data;
+        if (raw) orderMap[String(row.id)] = raw;
+      }
+    }
+
     const pdfBuffers = [];
     for (const s of shipments) {
       const cn = s.consignmentNumber;
       const sid = s.shipmentId || null;
-      // Retry up to 3 times with 2s delay
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const buf = await getLabel(cn, sid);
-          if (buf && buf.length > 100) { pdfBuffers.push(buf); break; }
-        } catch (err) {
-          if (attempt === 2) console.warn(`Label fetch failed for ${cn}:`, err.message);
-          else await new Promise(r => setTimeout(r, 2000));
-        }
+      const orderData = orderMap[String(s.shopifyOrderId)] || null;
+      try {
+        const buf = await getLabel(cn, sid, orderData);
+        if (buf && buf.length > 100) pdfBuffers.push(buf);
+      } catch (err) {
+        console.warn(`Label fetch failed for ${cn}:`, err.message);
       }
     }
 
