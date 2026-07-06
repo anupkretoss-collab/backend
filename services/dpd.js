@@ -173,14 +173,46 @@ export async function createShipment(order, despatchDate) {
  */
 export async function getLabel(consignmentNumber) {
   const { token, accountNumber } = await authenticate();
-  const { data } = await axios.get(
-    `${BASE}/shipping/shipment/label/${consignmentNumber}?outputFormat=PDF`,
-    {
-      headers: { ...authHeaders(token, accountNumber), Accept: 'application/pdf' },
-      responseType: 'arraybuffer',
+  const headers = authHeaders(token, accountNumber);
+
+  // Try endpoints in order until one works
+  const attempts = [
+    { url: `${BASE}/shipping/shipment/label/${consignmentNumber}?outputFormat=PDF`, binary: true },
+    { url: `${BASE}/shipping/label/${consignmentNumber}?outputFormat=PDF`, binary: true },
+    { url: `${BASE}/shipping/shipment/label/${consignmentNumber}`, binary: false },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      console.log(`[DPD] Fetching label: GET ${attempt.url}`);
+      if (attempt.binary) {
+        const { data } = await axios.get(attempt.url, {
+          headers: { ...headers, Accept: 'application/pdf' },
+          responseType: 'arraybuffer',
+        });
+        const buf = Buffer.from(data);
+        if (buf.length > 100) {
+          console.log(`[DPD] Label fetched OK — ${buf.length} bytes`);
+          return buf;
+        }
+      } else {
+        // JSON response — label may be base64 encoded
+        const { data } = await axios.get(attempt.url, { headers });
+        console.log(`[DPD] Label JSON response:`, JSON.stringify(data).slice(0, 300));
+        const b64 = data?.data?.label || data?.label;
+        if (b64) return Buffer.from(b64, 'base64');
+      }
+    } catch (err) {
+      const body = err.response?.data
+        ? Buffer.isBuffer(err.response.data)
+          ? err.response.data.toString('utf8').slice(0, 300)
+          : JSON.stringify(err.response.data).slice(0, 300)
+        : err.message;
+      console.warn(`[DPD] Label attempt failed (${attempt.url}): ${err.response?.status} — ${body}`);
     }
-  );
-  return Buffer.from(data);
+  }
+
+  throw new Error('All label fetch attempts failed — check logs for details');
 }
 
 /**
