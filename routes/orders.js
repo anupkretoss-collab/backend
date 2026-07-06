@@ -3909,4 +3909,98 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
   }
 });
 
+// ─── POST /api/orders/dpd-excel ───────────────────────────────────────────────
+// Body: { orderIds: [] }
+router.post('/dpd-excel', authenticateToken, async (req, res) => {
+  try {
+    const { orderIds = [] } = req.body;
+    if (!orderIds.length) return res.status(400).json({ message: 'orderIds is required' });
+
+    const placeholders = orderIds.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT raw_data FROM orders WHERE id IN (${placeholders})`,
+      orderIds
+    );
+
+    const orders = rows
+      .map(r => (typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data))
+      .filter(Boolean);
+
+    const headers = [
+      'Order ID', 'E-mail', 'First name', 'Last name',
+      'Address 1', 'Address 2', 'City', 'County',
+      'Country', 'Postcode', 'Order Notes', 'Phone',
+      'Weight (g)', 'Weight (kg)', 'Service',
+    ];
+
+    const dataRows = orders.map(o => {
+      const a = o.shipping_address || {};
+      const c = o.customer || {};
+      const first = c.first_name || (a.name || '').split(' ').slice(0, -1).join(' ') || '';
+      const last  = c.last_name  || (a.name || '').split(' ').slice(-1)[0] || '';
+      const totalG = (o.line_items || []).reduce((sum, li) => {
+        return sum + (li.grams > 0 ? li.grams : 999) * (li.quantity || 1);
+      }, 0) || 999;
+      const tags = (o.tags || '').toLowerCase();
+      const service = tags.includes('dpd-parcel') ? 'DPD Parcel' : 'DPD Express Pack';
+      return [
+        `#${o.order_number}`,
+        c.email || o.email || '',
+        first,
+        last,
+        a.address1 || '',
+        a.address2 || '',
+        a.city || '',
+        a.province || '',
+        a.country || 'United Kingdom',
+        a.zip || '',
+        o.note || '',
+        a.phone || c.phone || '',
+        totalG,
+        parseFloat((totalG / 1000).toFixed(2)),
+        service,
+      ];
+    });
+
+    const wsData = [headers, ...dataRows];
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+    ws['!cols'] = [
+      { wch: 10 }, { wch: 28 }, { wch: 14 }, { wch: 14 },
+      { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 14 },
+      { wch: 16 }, { wch: 12 }, { wch: 20 }, { wch: 16 },
+      { wch: 10 }, { wch: 10 }, { wch: 18 },
+    ];
+
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const cell = XLSX.utils.encode_cell({ r: 0, c: C });
+      if (!ws[cell]) continue;
+      ws[cell].s = {
+        font: { bold: true, sz: 10 },
+        fill: { fgColor: { rgb: 'D9E2F3' } },
+        alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+        border: {
+          top: { style: 'thin', color: { rgb: '000000' } },
+          bottom: { style: 'thin', color: { rgb: '000000' } },
+          left: { style: 'thin', color: { rgb: '000000' } },
+          right: { style: 'thin', color: { rgb: '000000' } },
+        },
+      };
+    }
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'DPD Orders');
+
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const filename = `DPD_Orders_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (err) {
+    console.error('dpd-excel error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
 export default router;
