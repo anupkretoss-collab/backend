@@ -19,27 +19,199 @@ const LABELIZE_BIN = path.join(
 );
 
 /**
- * Convert EPL buffer to PDF using the labelize binary (pixel-perfect render).
- * Label: 812×822 dots @ 203dpi ≈ 102×103 mm @ 8 dpmm.
+ * Render EPL/ZPL commands through labelize into a PNG buffer.
  */
-async function eplToPdfLabelize(eplBuf) {
+async function labelizeRender(srcText, widthMm, heightMm, format = 'epl') {
   const stamp = `dpd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const inFile  = path.join(os.tmpdir(), `${stamp}.epl`);
-  const outFile = path.join(os.tmpdir(), `${stamp}.pdf`);
+  const inFile  = path.join(os.tmpdir(), `${stamp}.${format}`);
+  const outFile = path.join(os.tmpdir(), `${stamp}.png`);
   try {
-    await writeFile(inFile, eplBuf);
+    await writeFile(inFile, Buffer.from(srcText, 'latin1'));
     if (process.platform !== 'win32') {
       await chmod(LABELIZE_BIN, 0o755).catch(() => {});
     }
     await execFileAsync(LABELIZE_BIN, [
-      'convert', inFile, '-f', 'epl', '-t', 'pdf', '-o', outFile,
-      '--width', '102', '--height', '103', '--dpmm', '8',
+      'convert', inFile, '-f', format, '-t', 'png', '-o', outFile,
+      '--width', String(widthMm), '--height', String(heightMm), '--dpmm', '8',
     ], { timeout: 15000 });
     return await readFile(outFile);
   } finally {
     unlink(inFile).catch(() => {});
     unlink(outFile).catch(() => {});
   }
+}
+
+/**
+ * Convert EPL buffer to PDF using the labelize binary (pixel-perfect render).
+ * Label: 812×822 dots @ 203dpi ≈ 102×103 mm @ 8 dpmm.
+ * Renders to PNG, then embeds scaled-up on a larger PDF page (A4 width) for easy printing.
+ */
+async function eplToPdfLabelize(eplBuf) {
+  // labelize's own font doesn't match a real EPL thermal printer's dot-matrix face:
+  //  - rotated (rot=1) text renders bold
+  //  - large fonts (2-5) use smooth condensed letterforms instead of a blocky bitmap
+  // We strip both out of the EPL and composite them ourselves: font 1 (small text)
+  // renders fine through labelize as-is and is left alone.
+  const eplRaw = eplBuf.toString('latin1');
+  const refX = parseInt((eplRaw.match(/^R(\d+)/m) || [, '0'])[1]);
+  const verticalTexts = []; // rot=1 {x, y, vm, text}
+  const bigTexts = [];      // rot=0 all fonts {x, y, font, hm, vm, text} — rendered as bitmap for a uniform typeface
+
+  const rawLines = eplRaw.split(/\r?\n/);
+  const outLines = rawLines.map(line => {
+    let m = line.match(/^A(-?\d+),(-?\d+),1,(\d+),(\d+),(\d+),[NR],"(.*)"/);
+    if (m) {
+      if (m[6].trim()) verticalTexts.push({ x: parseInt(m[1]) + refX, y: parseInt(m[2]), vm: parseInt(m[5]), text: m[6] });
+      return '';
+    }
+    m = line.match(/^A(-?\d+),(-?\d+),0,(\d+),(\d+),(\d+),[NR],"(.*)"/);
+    if (m) {
+      let x = parseInt(m[1]);
+      if (x <= 10) x += 8; // pad away from the left border
+      const font = parseInt(m[3]);
+      if (m[6].trim()) {
+        bigTexts.push({ x: x + refX, y: parseInt(m[2]), font, hm: parseInt(m[4]), vm: parseInt(m[5]), text: m[6].replace(/\s+$/, '') });
+      }
+      return '';
+    }
+    return line;
+  });
+
+  const eplFixed = outLines.filter(Boolean).join('\n');
+  let png = await labelizeRender(eplFixed, 106, 103);
+
+  // Composite the stripped texts back in with an authentic dot-matrix bitmap font.
+  if (verticalTexts.length || bigTexts.length) {
+    try {
+      const { PNG } = await import('pngjs');
+      const { FONT8X8 } = await import('../utils/font8x8.mjs');
+      const main = PNG.sync.read(png);
+
+      // Real EPL2 built-in font cell size in dots (width × height) at multiplier 1
+      const FONT_CELL = {
+        1: { w: 7,  h: 11 },
+        2: { w: 11, h: 16 },
+        3: { w: 12, h: 20 },
+        4: { w: 14, h: 24 },
+        5: { w: 32, h: 48 },
+      };
+
+      const setBlackPx = (img, x, y) => {
+        if (x < 0 || y < 0 || x >= img.width || y >= img.height) return;
+        const i = ((y * img.width + x) << 2);
+        img.data[i] = 0; img.data[i + 1] = 0; img.data[i + 2] = 0; img.data[i + 3] = 255;
+      };
+
+      // Draw one glyph from the 8x8 source bitmap scaled up to gw×gh dots, nearest-neighbour
+      // (keeps the blocky/pixelated look of a real low-res thermal font).
+      const drawGlyph = (img, code, dx, dy, gw, gh) => {
+        const glyph = FONT8X8[code] || FONT8X8[63];
+        for (let gy = 0; gy < gh; gy++) {
+          const row = glyph[(gy * 8 / gh) | 0];
+          if (!row) continue;
+          for (let gx = 0; gx < gw; gx++) {
+            if (row & (1 << ((gx * 8 / gw) | 0))) setBlackPx(img, dx + gx, dy + gy);
+          }
+        }
+      };
+
+      for (const t of bigTexts) {
+        const cell = FONT_CELL[t.font] || FONT_CELL[4];
+        const pitch = cell.w * t.hm;
+        const gw = Math.round(pitch * 0.9), gh = cell.h * t.vm;
+        for (let i = 0; i < t.text.length; i++) {
+          const code = t.text.charCodeAt(i);
+          if (code !== 32) drawGlyph(main, code < 128 ? code : 63, t.x + i * pitch, t.y, gw, gh);
+        }
+      }
+
+      if (verticalTexts.length) {
+      const rowH = 24;
+      const glyphH = 9; // font 1 glyph height + 1px pad
+      const textLeft = 8;
+      const canvasH = verticalTexts.length * rowH + rowH;
+      const eplRows = ['N', `Q${canvasH},24`];
+      verticalTexts.forEach((t, i) => {
+        eplRows.push(`A${textLeft},${8 + i * rowH},0,1,1,${t.vm || 1},N,"${t.text.replace(/"/g, "'")}"`);
+      });
+      eplRows.push('P1');
+      const rowPngBuf = await labelizeRender(eplRows.join('\n'), 106, Math.ceil(canvasH / 8) + 2);
+      const rows = PNG.sync.read(rowPngBuf);
+
+      const isBlack = (img, x, y) =>
+        x >= 0 && y >= 0 && x < img.width && y < img.height && img.data[((y * img.width + x) << 2)] < 128;
+      const setBlack = (img, x, y) => {
+        if (x < 0 || y < 0 || x >= img.width || y >= img.height) return;
+        const i = ((y * img.width + x) << 2);
+        img.data[i] = 0; img.data[i + 1] = 0; img.data[i + 2] = 0; img.data[i + 3] = 255;
+      };
+
+      verticalTexts.forEach((t, i) => {
+        const rowTop = 8 + i * rowH;
+        const textW = t.text.length * 7 + 6; // generous glyph-width estimate
+        // Rotate 90° CW: glyph column extends LEFT of the EPL anchor x (printer behaviour)
+        for (let sy = rowTop - 1; sy < rowTop + glyphH + 1; sy++) {
+          for (let sx = textLeft - 1; sx < textLeft + textW; sx++) {
+            if (!isBlack(rows, sx, sy)) continue;
+            const dx = (t.x - glyphH) + (rowTop + glyphH - sy);
+            const dy = t.y + (sx - textLeft);
+            setBlack(main, dx, dy);
+          }
+        }
+      });
+      }
+
+      png = PNG.sync.write(main);
+    } catch (e) {
+      console.warn('[DPD] Vertical text composite failed:', e.message);
+    }
+  }
+
+  if (process.env.DPD_DEBUG_PNG) {
+    await writeFile(process.env.DPD_DEBUG_PNG, png).catch(() => {});
+  }
+
+  // Upscale 3× with nearest-neighbour so text stays sharp when printed at A4 width.
+  // (labelize renders at native 203dpi ≈ 816px — too soft when stretched to A4.)
+  try {
+    const { PNG } = await import('pngjs');
+    const src = PNG.sync.read(png);
+    const S = 3;
+    const dst = new PNG({ width: src.width * S, height: src.height * S });
+    const rowBytes = dst.width << 2;
+    const row = Buffer.allocUnsafe(rowBytes);
+    for (let sy = 0; sy < src.height; sy++) {
+      // Expand one source row horizontally
+      for (let sx = 0; sx < src.width; sx++) {
+        const si = (sy * src.width + sx) << 2;
+        for (let r = 0; r < S; r++) {
+          src.data.copy(row, ((sx * S + r) << 2), si, si + 4);
+        }
+      }
+      // Stamp it S times vertically
+      for (let r = 0; r < S; r++) {
+        row.copy(dst.data, (sy * S + r) * rowBytes);
+      }
+    }
+    png = PNG.sync.write(dst);
+  } catch (e) {
+    console.warn('[DPD] PNG upscale skipped:', e.message);
+  }
+
+  // PDF page = label size (106×103mm) + small top margin so the top border
+  // line doesn't sit on the page edge
+  const MM = 72 / 25.4;
+  const topMargin = 4 * MM;
+  const labelW = 106 * MM, labelH = 103 * MM;
+  const pageW = labelW, pageH = labelH + topMargin;
+
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([pageW, pageH]);
+  const img = await pdfDoc.embedPng(png);
+
+  page.drawImage(img, { x: 0, y: 0, width: labelW, height: labelH });
+
+  return Buffer.from(await pdfDoc.save());
 }
 
 const BASE = process.env.DPD_API_URL || 'https://api.dpdlocal.co.uk';
