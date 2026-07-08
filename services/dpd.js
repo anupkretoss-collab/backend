@@ -2,6 +2,45 @@ import axios from 'axios';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import bwipjs from 'bwip-js';
 import { eplToPdf } from '../utils/epl-to-pdf.mjs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { writeFile, readFile, unlink, chmod } from 'fs/promises';
+import { fileURLToPath } from 'url';
+import path from 'path';
+import os from 'os';
+
+const execFileAsync = promisify(execFile);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// labelize binary — renders EPL exactly like a thermal printer (bitmap fonts)
+const LABELIZE_BIN = path.join(
+  __dirname, '..', 'bin',
+  process.platform === 'win32' ? 'labelize.exe' : 'labelize'
+);
+
+/**
+ * Convert EPL buffer to PDF using the labelize binary (pixel-perfect render).
+ * Label: 812×822 dots @ 203dpi ≈ 102×103 mm @ 8 dpmm.
+ */
+async function eplToPdfLabelize(eplBuf) {
+  const stamp = `dpd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const inFile  = path.join(os.tmpdir(), `${stamp}.epl`);
+  const outFile = path.join(os.tmpdir(), `${stamp}.pdf`);
+  try {
+    await writeFile(inFile, eplBuf);
+    if (process.platform !== 'win32') {
+      await chmod(LABELIZE_BIN, 0o755).catch(() => {});
+    }
+    await execFileAsync(LABELIZE_BIN, [
+      'convert', inFile, '-f', 'epl', '-t', 'pdf', '-o', outFile,
+      '--width', '102', '--height', '103', '--dpmm', '8',
+    ], { timeout: 15000 });
+    return await readFile(outFile);
+  } finally {
+    unlink(inFile).catch(() => {});
+    unlink(outFile).catch(() => {});
+  }
+}
 
 const BASE = process.env.DPD_API_URL || 'https://api.dpdlocal.co.uk';
 
@@ -316,9 +355,14 @@ export async function getLabel(consignmentNumber, shipmentId, orderData) {
 
   if (buf.slice(0, 4).toString() === '%PDF') return buf;
 
-  // EPL thermal format → convert to PDF
-  console.log('[DPD] Converting EPL → PDF');
-  return await eplToPdf(buf.toString('latin1'));
+  // EPL thermal format → convert to PDF (labelize = pixel-perfect thermal render)
+  try {
+    console.log('[DPD] Converting EPL → PDF via labelize');
+    return await eplToPdfLabelize(buf);
+  } catch (err) {
+    console.warn(`[DPD] labelize failed (${err.message}) — falling back to JS renderer`);
+    return await eplToPdf(buf.toString('latin1'));
+  }
 }
 
 /**

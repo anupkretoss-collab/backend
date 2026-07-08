@@ -85,22 +85,14 @@ function parseEpl(src) {
 }
 
 // ── Coordinate helpers ────────────────────────────────────────────────────────
-// ZB mode: EPL y=0 is BOTTOM of label; higher y = higher on label.
-// PDF: y=0 is BOTTOM of page. So EPL_y maps directly to PDF_y.
-// EPL positions text at the TOP-LEFT corner of the glyph.
-// PDF draws text at the BASELINE (bottom-left).
-// So PDF baseline = (epl_y - font_height_dots) * PT
+// We render using ZT (top-to-bottom) mapping regardless of ZB flag.
+// This matches the Labelary viewer output, which is the expected DPD label format.
+// EPL origin = TOP-LEFT of character; PDF text origin = BASELINE (bottom-left).
+// PDF baseline = (labelH - epl_y - fontH) * PT
 
-function eplToPdfCoords(ex, ey, fontH_dots, { labelH, bottomUp }) {
+function eplToPdfCoords(ex, ey, fontH_dots, { labelH }) {
   const px = ex * PT;
-  let   py;
-  if (bottomUp) {
-    // y=0 is bottom; text top is at ey dots from bottom; baseline is lower
-    py = (ey - fontH_dots) * PT;
-  } else {
-    // y=0 is top; flip to PDF coords (y=0 = bottom)
-    py = (labelH - ey - fontH_dots) * PT;
-  }
+  const py = (labelH - ey - fontH_dots) * PT;
   return { px, py };
 }
 
@@ -114,20 +106,16 @@ export async function eplToPdf(eplSrc) {
 
   const pdfDoc = await PDFDocument.create();
   const page   = pdfDoc.addPage([W, H]);
-  const fontR  = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const fontB  = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  // Courier = monospace, closest match to EPL's fixed-width bitmap fonts
+  const fontR  = await pdfDoc.embedFont(StandardFonts.Courier);
+  const fontB  = await pdfDoc.embedFont(StandardFonts.CourierBold);
 
   // ── Draw border boxes / lines ─────────────────────────────────────────────
   for (const b of boxes) {
     const px = b.x * PT;
     const pw = b.w * PT;
     const ph = b.h * PT;
-    let   py;
-    if (bottomUp) {
-      py = b.y * PT;
-    } else {
-      py = (labelH - b.y - b.h) * PT;
-    }
+    const py = (labelH - b.y - b.h) * PT;
     if (b.w <= 3 || b.h <= 3) {
       // Thin line
       if (b.w > b.h) {
@@ -144,7 +132,7 @@ export async function eplToPdf(eplSrc) {
   for (const t of texts) {
     const baseH   = EPL_FONT_H[t.font] || 12;
     const fontH_d = baseH * t.vm;
-    const fontSize = Math.max(fontH_d * PT * 0.75, 4); // 75% of cell height for visual fit
+    const fontSize = Math.max(fontH_d * PT * 0.65, 3.5);
     const f = fontSize > 7 ? fontB : fontR;
 
     if (t.rot === 0) {
@@ -156,47 +144,26 @@ export async function eplToPdf(eplSrc) {
       } catch (_) {}
 
     } else if (t.rot === 1) {
-      // 90° CW — text reads top-to-bottom; EPL origin is at bottom-right of the text block
-      // In PDF: rotate -90° around the draw point
-      const fontW_d = baseH * t.hm; // approximate character width = height for square fonts
-      let px, py;
-      if (bottomUp) {
-        px = (t.x + fontW_d) * PT;
-        py = t.y * PT;
-      } else {
-        px = (t.x + fontW_d) * PT;
-        py = (labelH - t.y) * PT;
-      }
-      if (px < 0 || px > W + 50) continue;
+      // 90° CW — text reads top→bottom; x is RIGHT edge of column (char extends leftward)
+      const px = t.x * PT;
+      const py = (labelH - t.y) * PT;
+      if (px < 0 || px > W + 10) continue;
       try {
         page.drawText(t.data, { x: px, y: py, size: fontSize, font: f, color: rgb(0, 0, 0), rotate: degrees(-90) });
       } catch (_) {}
 
     } else if (t.rot === 2) {
-      // 180° — rotated upside down
-      const fontH_p = fontH_d * PT;
-      let px, py;
-      if (bottomUp) {
-        px = t.x * PT;
-        py = (t.y - fontH_d) * PT;
-      } else {
-        px = t.x * PT;
-        py = (labelH - t.y - fontH_d) * PT;
-      }
+      // 180°
+      const { px, py } = eplToPdfCoords(t.x, t.y, fontH_d, parsed);
       try {
-        page.drawText(t.data, { x: px + (fontR.widthOfTextAtSize(t.data, fontSize)), y: py + fontH_p, size: fontSize, font: f, color: rgb(0, 0, 0), rotate: degrees(180) });
+        const tw = f.widthOfTextAtSize(t.data, fontSize);
+        page.drawText(t.data, { x: px + tw, y: py + fontH_d * PT, size: fontSize, font: f, color: rgb(0, 0, 0), rotate: degrees(180) });
       } catch (_) {}
 
     } else if (t.rot === 3) {
       // 270° CW (= 90° CCW)
-      let px, py;
-      if (bottomUp) {
-        px = t.x * PT;
-        py = t.y * PT;
-      } else {
-        px = t.x * PT;
-        py = (labelH - t.y) * PT;
-      }
+      const px = t.x * PT;
+      const py = (labelH - t.y) * PT;
       try {
         page.drawText(t.data, { x: px, y: py, size: fontSize, font: f, color: rgb(0, 0, 0), rotate: degrees(90) });
       } catch (_) {}
@@ -223,13 +190,8 @@ export async function eplToPdf(eplSrc) {
       const displayW = Math.min(barW_pt, nw * (barH_pt / nh));
       const displayH = barH_pt;
 
-      let px = bc.x * PT;
-      let py;
-      if (bottomUp) {
-        py = (bc.y - bc.h) * PT;
-      } else {
-        py = (labelH - bc.y - bc.h) * PT;
-      }
+      const px = bc.x * PT;
+      const py = (labelH - bc.y - bc.h) * PT;
 
       page.drawImage(img, { x: px, y: py, width: displayW, height: displayH });
     } catch (e) {
@@ -240,25 +202,27 @@ export async function eplToPdf(eplSrc) {
   return Buffer.from(await pdfDoc.save());
 }
 
-// ── CLI entry point ───────────────────────────────────────────────────────────
-const [,, inFile, outFile] = process.argv;
+// ── CLI entry point — only runs when file is executed directly ────────────────
+import { fileURLToPath } from 'url';
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const [,, inFile, outFile] = process.argv;
 
-let eplSrc;
-if (inFile && inFile !== '-') {
-  eplSrc = readFileSync(inFile, 'utf8');
-} else {
-  // Read from stdin
-  const chunks = [];
-  process.stdin.on('data', d => chunks.push(d));
-  await new Promise(r => process.stdin.on('end', r));
-  eplSrc = Buffer.concat(chunks).toString('utf8');
-}
+  let eplSrc;
+  if (inFile && inFile !== '-') {
+    eplSrc = readFileSync(inFile, 'utf8');
+  } else {
+    const chunks = [];
+    process.stdin.on('data', d => chunks.push(d));
+    await new Promise(r => process.stdin.on('end', r));
+    eplSrc = Buffer.concat(chunks).toString('utf8');
+  }
 
-const pdfBuf = await eplToPdf(eplSrc);
+  const pdfBuf = await eplToPdf(eplSrc);
 
-if (outFile) {
-  writeFileSync(outFile, pdfBuf);
-  console.log(`✅ Written to ${outFile}`);
-} else {
-  process.stdout.write(pdfBuf);
+  if (outFile) {
+    writeFileSync(outFile, pdfBuf);
+    console.log(`✅ Written to ${outFile}`);
+  } else {
+    process.stdout.write(pdfBuf);
+  }
 }
