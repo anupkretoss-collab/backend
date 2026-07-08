@@ -177,77 +177,118 @@ export async function createShipment(order, despatchDate) {
 async function generateLabelPdf(consignmentNumber, parcelNumber, orderData = {}) {
   const a = orderData.shipping_address || {};
   const c = orderData.customer || {};
-  const toName = a.name || `${c.first_name || ''} ${c.last_name || ''}`.trim() || 'Customer';
-  const toAddr1 = a.address1 || '';
-  const toAddr2 = a.address2 || '';
-  const toCity  = a.city || '';
-  const toZip   = a.zip || '';
+  const toName    = a.name || `${c.first_name || ''} ${c.last_name || ''}`.trim() || 'Customer';
+  const toAddr1   = a.address1 || '';
+  const toAddr2   = a.address2 || '';
+  const toCity    = a.city || '';
+  const toZip     = (a.zip || '').toUpperCase();
   const toCountry = a.country_code || 'GB';
-  const service = getDpdServiceLabel(orderData);
-  const orderRef = `#${orderData.order_number || ''}`;
-
-  // Generate barcode PNG (Code 128 of parcel number)
-  const barcodePng = await bwipjs.toBuffer({
-    bcid: 'code128',
-    text: parcelNumber || consignmentNumber,
-    scale: 3,
-    height: 12,
-    includetext: true,
-    textxalign: 'center',
-  });
-
-  // A6 label: 105mm x 148mm = 297.6pt x 419.5pt
-  const W = 297.6, H = 419.5;
-  const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([W, H]);
-  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-  const reg  = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const barcodeImg = await pdfDoc.embedPng(barcodePng);
-
-  const PAD = 12;
-  const lineH = 13;
-
-  // Header bar
-  page.drawRectangle({ x: 0, y: H - 36, width: W, height: 36, color: rgb(0.20, 0.47, 0.82) });
-  page.drawText('DPD', { x: PAD, y: H - 25, size: 16, font: bold, color: rgb(1,1,1) });
-  page.drawText(service, { x: 60, y: H - 25, size: 11, font: reg, color: rgb(1,1,1) });
-  page.drawText(orderRef, { x: W - PAD - reg.widthOfTextAtSize(orderRef, 10), y: H - 25, size: 10, font: reg, color: rgb(0.9,0.9,0.9) });
-
-  // Separator + FROM
-  let y = H - 50;
-  page.drawText('FROM', { x: PAD, y, size: 7, font: bold, color: rgb(0.5,0.5,0.5) });
-  y -= lineH;
+  const service   = getDpdServiceLabel(orderData);
+  const orderRef  = `#${orderData.order_number || ''}`;
   const storeName = process.env.STORE_NAME || 'South Devon Chilli Farm';
   const storeZip  = process.env.STORE_POSTCODE || 'TQ7 4DX';
-  page.drawText(storeName, { x: PAD, y, size: 9, font: bold, color: rgb(0,0,0) });
-  y -= lineH - 2;
-  page.drawText(storeZip, { x: PAD, y, size: 9, font: reg, color: rgb(0,0,0) });
 
-  // Divider
-  y -= 10;
-  page.drawLine({ start: { x: PAD, y }, end: { x: W - PAD, y }, thickness: 0.5, color: rgb(0.8,0.8,0.8) });
-  y -= 14;
+  // High-quality barcode: render at 600dpi equivalent, no stretching
+  const barcodeText = parcelNumber || consignmentNumber;
+  const barcodePng = await bwipjs.toBuffer({
+    bcid: 'code128',
+    text: barcodeText,
+    scale: 4,        // 4px per module — sharp at label scale
+    height: 15,      // mm height of barcode bars
+    includetext: false, // draw text separately for control
+    padding: 0,
+  });
 
-  // TO block
-  page.drawText('DELIVER TO', { x: PAD, y, size: 7, font: bold, color: rgb(0.5,0.5,0.5) });
-  y -= lineH + 2;
-  page.drawText(toName, { x: PAD, y, size: 13, font: bold, color: rgb(0,0,0) });
-  y -= lineH + 2;
-  if (toAddr1) { page.drawText(toAddr1, { x: PAD, y, size: 11, font: reg, color: rgb(0,0,0) }); y -= lineH; }
-  if (toAddr2) { page.drawText(toAddr2, { x: PAD, y, size: 11, font: reg, color: rgb(0,0,0) }); y -= lineH; }
-  if (toCity)  { page.drawText(toCity,  { x: PAD, y, size: 11, font: reg, color: rgb(0,0,0) }); y -= lineH; }
-  if (toZip)   { page.drawText(toZip.toUpperCase(), { x: PAD, y, size: 13, font: bold, color: rgb(0,0,0) }); y -= lineH + 2; }
-  page.drawText(toCountry, { x: PAD, y, size: 9, font: reg, color: rgb(0.3,0.3,0.3) });
+  // A6 label: 105mm × 148mm in points (1pt = 1/72 inch; 1mm = 2.835pt)
+  const MM = 2.835;
+  const W = 105 * MM;  // 297.7pt
+  const H = 148 * MM;  // 419.6pt
+  const PAD = 8 * MM;
 
-  // Barcode section
-  const barcodeH = 70;
-  const barcodeY = PAD + 30;
-  page.drawLine({ start: { x: PAD, y: barcodeY + barcodeH + 18 }, end: { x: W - PAD, y: barcodeY + barcodeH + 18 }, thickness: 0.5, color: rgb(0.8,0.8,0.8) });
-  page.drawImage(barcodeImg, { x: PAD, y: barcodeY, width: W - PAD * 2, height: barcodeH });
-  page.drawText(`Consignment: ${consignmentNumber}`, { x: PAD, y: PAD + 14, size: 8, font: reg, color: rgb(0.3,0.3,0.3) });
-  page.drawText(`Parcel: ${parcelNumber}`, { x: PAD, y: PAD + 4, size: 8, font: reg, color: rgb(0.3,0.3,0.3) });
+  const pdfDoc = await PDFDocument.create();
+  const page   = pdfDoc.addPage([W, H]);
+  const bold   = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const reg    = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+  // Embed barcode — maintain natural aspect ratio, don't stretch
+  const barcodeImg  = await pdfDoc.embedPng(barcodePng);
+  const { width: bW, height: bH } = barcodeImg.scale(1);
+  const barcodeDisplayW = W - PAD * 2;
+  const barcodeDisplayH = (bH / bW) * barcodeDisplayW;
+
+  const lineH = 3.8 * MM;
+
+  // ── Header ──────────────────────────────────────────────────────────────────
+  const headerH = 10 * MM;
+  page.drawRectangle({ x: 0, y: H - headerH, width: W, height: headerH, color: rgb(0.18, 0.40, 0.75) });
+  page.drawText('DPD', { x: PAD, y: H - headerH + 3 * MM, size: 14, font: bold, color: rgb(1,1,1) });
+  page.drawText(service, { x: PAD + 18 * MM, y: H - headerH + 3 * MM, size: 9, font: reg, color: rgb(1,1,1) });
+  const refW = reg.widthOfTextAtSize(orderRef, 8);
+  page.drawText(orderRef, { x: W - PAD - refW, y: H - headerH + 3 * MM, size: 8, font: reg, color: rgb(0.85,0.85,0.85) });
+
+  // ── FROM ────────────────────────────────────────────────────────────────────
+  let y = H - headerH - 4 * MM;
+  page.drawText('FROM', { x: PAD, y, size: 6, font: bold, color: rgb(0.5,0.5,0.5) });
+  y -= lineH;
+  page.drawText(storeName, { x: PAD, y, size: 8, font: bold, color: rgb(0,0,0) });
+  y -= lineH * 0.85;
+  page.drawText(storeZip,  { x: PAD, y, size: 8, font: reg,  color: rgb(0,0,0) });
+
+  // ── Divider ─────────────────────────────────────────────────────────────────
+  y -= 3 * MM;
+  page.drawLine({ start: { x: 0, y }, end: { x: W, y }, thickness: 1, color: rgb(0,0,0) });
+  y -= 4 * MM;
+
+  // ── TO ──────────────────────────────────────────────────────────────────────
+  page.drawText('DELIVER TO', { x: PAD, y, size: 6, font: bold, color: rgb(0.5,0.5,0.5) });
+  y -= lineH;
+  page.drawText(toName,  { x: PAD, y, size: 12, font: bold, color: rgb(0,0,0) }); y -= lineH * 1.1;
+  if (toAddr1) { page.drawText(toAddr1, { x: PAD, y, size: 9, font: reg, color: rgb(0,0,0) }); y -= lineH; }
+  if (toAddr2) { page.drawText(toAddr2, { x: PAD, y, size: 9, font: reg, color: rgb(0,0,0) }); y -= lineH; }
+  if (toCity)  { page.drawText(toCity,  { x: PAD, y, size: 9, font: reg, color: rgb(0,0,0) }); y -= lineH; }
+  if (toZip) {
+    page.drawText(toZip, { x: PAD, y, size: 14, font: bold, color: rgb(0,0,0) }); y -= lineH * 1.2;
+  }
+  if (toCountry !== 'GB') {
+    page.drawText(toCountry, { x: PAD, y, size: 8, font: reg, color: rgb(0.3,0.3,0.3) }); y -= lineH;
+  }
+
+  // ── Barcode ─────────────────────────────────────────────────────────────────
+  y -= 3 * MM;
+  page.drawLine({ start: { x: 0, y }, end: { x: W, y }, thickness: 1, color: rgb(0,0,0) });
+  y -= 3 * MM;
+
+  // Centre barcode horizontally
+  const barcodeX = (W - barcodeDisplayW) / 2;
+  page.drawImage(barcodeImg, { x: barcodeX, y: y - barcodeDisplayH, width: barcodeDisplayW, height: barcodeDisplayH });
+  y -= barcodeDisplayH + 2 * MM;
+
+  // Barcode number in large bold text below bars
+  const barcodeTextW = bold.widthOfTextAtSize(barcodeText, 9);
+  page.drawText(barcodeText, { x: (W - barcodeTextW) / 2, y, size: 9, font: bold, color: rgb(0,0,0) });
+  y -= lineH;
+
+  // Consignment ref small
+  const cnText = `Consignment: ${consignmentNumber}`;
+  const cnW = reg.widthOfTextAtSize(cnText, 7);
+  page.drawText(cnText, { x: (W - cnW) / 2, y, size: 7, font: reg, color: rgb(0.4,0.4,0.4) });
 
   return Buffer.from(await pdfDoc.save());
+}
+
+/**
+ * Fetch raw EPL label from DPD API (for thermal printers).
+ * Returns a Buffer of EPL bytes.
+ */
+export async function getLabelEpl(consignmentNumber, shipmentId) {
+  const { token, accountNumber } = await authenticate();
+  const headers = authHeaders(token, accountNumber);
+  if (!shipmentId) throw new Error('shipmentId required for EPL download');
+  const { data } = await axios.get(
+    `${BASE}/shipping/shipment/${shipmentId}/label`,
+    { headers: { ...headers, Accept: '*/*' }, responseType: 'arraybuffer' }
+  );
+  return Buffer.from(data);
 }
 
 /**

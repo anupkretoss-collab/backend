@@ -3924,6 +3924,39 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
   }
 });
 
+// ─── POST /api/orders/dpd-epl ────────────────────────────────────────────────
+// Body: { shipments: [{consignmentNumber, shipmentId}] }
+// Returns raw EPL file(s) concatenated for thermal printer
+router.post('/dpd-epl', authenticateToken, async (req, res) => {
+  try {
+    let shipments = req.body.shipments || [];
+    if (!shipments.length) return res.status(400).json({ message: 'shipments is required' });
+
+    const { getLabelEpl } = await import('../services/dpd.js');
+
+    const eplParts = [];
+    for (const s of shipments) {
+      try {
+        const buf = await getLabelEpl(s.consignmentNumber, s.shipmentId);
+        if (buf && buf.length > 10) eplParts.push(buf);
+      } catch (err) {
+        console.warn(`EPL fetch failed for ${s.consignmentNumber}:`, err.message);
+      }
+    }
+
+    if (!eplParts.length) return res.status(404).json({ message: 'No EPL labels retrieved' });
+
+    const merged = Buffer.concat(eplParts);
+    const filename = `dpd_labels_${new Date().toISOString().slice(0, 10)}.epl`;
+    res.setHeader('Content-Type', 'text/vnd.eltron-epl');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(merged);
+  } catch (err) {
+    console.error('dpd-epl error:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // ─── POST /api/orders/dpd-excel ───────────────────────────────────────────────
 // Body: { orderIds: [] }
 router.post('/dpd-excel', authenticateToken, async (req, res) => {
