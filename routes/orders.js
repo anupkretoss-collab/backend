@@ -3910,13 +3910,17 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
     }
 
     const pdfBuffers = [];
+    const labelledShipments = [];
     for (const s of shipments) {
       const cn = s.consignmentNumber;
       const sid = s.shipmentId || null;
       const orderData = orderMap[String(s.shopifyOrderId)] || null;
       try {
         const buf = await getLabel(cn, sid, orderData);
-        if (buf && buf.length > 100) pdfBuffers.push(buf);
+        if (buf && buf.length > 100) {
+          pdfBuffers.push(buf);
+          labelledShipments.push(s);
+        }
       } catch (err) {
         console.warn(`Label fetch failed for ${cn}:`, err.message);
       }
@@ -3928,6 +3932,32 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="dpd_labels_${new Date().toISOString().slice(0, 10)}.pdf"`);
     res.send(merged);
+
+    // Auto-fulfill in Shopify + notify customers (same as Royal Mail manifest flow).
+    // Runs after the response so the label download is not delayed.
+    const toFulfill = labelledShipments
+      .filter(s => s.shopifyOrderId)
+      .map(s => ({
+        shopifyId: String(s.shopifyOrderId),
+        trackingNumber: s.trackingNumber || s.consignmentNumber || null,
+      }));
+    if (toFulfill.length) {
+      try {
+        const { markOrdersFulfilled } = await import('../services/shopify.js');
+        const fulfillRes = await markOrdersFulfilled(toFulfill, true);
+        const okIds = fulfillRes.successfulIds || [];
+        console.log(`[DPD] Auto-fulfilled ${okIds.length}/${toFulfill.length} orders`);
+        if (okIds.length) {
+          const ph = okIds.map(() => '?').join(',');
+          await pool.query(
+            `UPDATE orders SET fulfillment_status = 'fulfilled' WHERE id IN (${ph})`,
+            okIds
+          );
+        }
+      } catch (fulfillErr) {
+        console.error('[DPD] Auto-fulfill error (non-fatal):', fulfillErr.message);
+      }
+    }
   } catch (err) {
     console.error('dpd-labels error:', err);
     res.status(500).json({ message: err.message });
