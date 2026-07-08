@@ -3927,6 +3927,23 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
 // ─── POST /api/orders/dpd-epl ────────────────────────────────────────────────
 // Body: { shipments: [{consignmentNumber, shipmentId}] }
 // Returns raw EPL file(s) concatenated for thermal printer
+// ─── GET /api/orders/dpd-networks ─────────────────────────────────────────────
+// Returns all available network codes for this DPD account
+router.get('/dpd-networks', authenticateToken, async (req, res) => {
+  try {
+    const { authenticate, authHeaders } = await import('../services/dpd.js');
+    const { token, accountNumber } = await authenticate();
+    const axios = (await import('axios')).default;
+    const BASE = process.env.DPD_API_URL || 'https://api.dpdlocal.co.uk';
+    const { data } = await axios.get(`${BASE}/shipping/network`, {
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', GeoClient: `account/${accountNumber}`, GeoSession: token },
+    });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ message: err.message, response: err.response?.data });
+  }
+});
+
 router.post('/dpd-epl', authenticateToken, async (req, res) => {
   try {
     let shipments = req.body.shipments || [];

@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import bwipjs from 'bwip-js';
+import { eplToPdf } from '../utils/epl-to-pdf.mjs';
 
 const BASE = process.env.DPD_API_URL || 'https://api.dpdlocal.co.uk';
 
@@ -343,20 +344,15 @@ export async function getLabel(consignmentNumber, shipmentId, orderData) {
       const buf = Buffer.from(data);
       const ct = rh['content-type'] || '';
       if (buf.slice(0, 4).toString() === '%PDF') return buf;
-      // EPL/thermal format — extract parcelNumber from what we know and generate PDF
-      console.log(`[DPD] DPD returned ${ct} — generating PDF label from shipment data`);
-      // parcelNumber = consignmentNumber prefixed with "1597" (DPD Local pattern)
-      const parcelNumber = `1597${consignmentNumber}`;
-      return await generateLabelPdf(consignmentNumber, parcelNumber, orderData || {});
+      // EPL/thermal format — convert to PDF using EPL renderer
+      console.log(`[DPD] DPD returned ${ct} — converting EPL to PDF`);
+      return await eplToPdf(buf.toString('latin1'));
     } catch (err) {
       logErr('Label fallback', err);
     }
   }
 
-  // No shipmentId — generate label from available data
-  console.log(`[DPD] No shipmentId — generating PDF label from data`);
-  const parcelNumber = `1597${consignmentNumber}`;
-  return await generateLabelPdf(consignmentNumber, parcelNumber, orderData || {});
+  throw new Error('shipmentId required to fetch DPD label');
 }
 
 /**
