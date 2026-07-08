@@ -144,14 +144,12 @@ export async function createShipment(order, despatchDate) {
     ],
   };
 
-  console.log(`[DPD] Creating shipment for order #${order.order_number} | network: ${networkCode} | weight: ${weightKg}kg`);
-  console.log(`[DPD] Payload:`, JSON.stringify(payload, null, 2));
+  console.log(`[DPD] Creating shipment #${order.order_number} | network: ${networkCode} | ${weightKg}kg`);
 
   const { data } = await axios.post(`${BASE}/shipping/shipment`, payload, {
     headers: authHeaders(token, accountNumber),
+    timeout: 20000,
   });
-
-  console.log(`[DPD] Raw response for #${order.order_number}:`, JSON.stringify(data, null, 2));
 
   const shipmentId = String(data.data?.shipmentId || '');
   const detail = data.data?.consignmentDetail?.[0];
@@ -300,59 +298,27 @@ export async function getLabel(consignmentNumber, shipmentId, orderData) {
   const { token, accountNumber } = await authenticate();
   const headers = authHeaders(token, accountNumber);
 
-  const logErr = (label, err) => {
-    const body = err.response?.data
-      ? Buffer.isBuffer(err.response.data)
-        ? err.response.data.toString('utf8').slice(0, 300)
-        : JSON.stringify(err.response.data).slice(0, 300)
-      : err.message;
-    console.warn(`[DPD] ${label}: ${err.response?.status} — ${body}`);
-  };
+  if (!shipmentId) throw new Error('shipmentId required to fetch DPD label');
 
-  // Correct endpoint is /shipping/shipment/{shipmentId}/label
-  // Default returns EPL (thermal format) — try PDF variants first
-  if (shipmentId) {
-    const base = `${BASE}/shipping/shipment/${shipmentId}/label`;
+  // DPD Local account returns EPL thermal format — fetch directly, no wasted PDF attempts
+  const url = `${BASE}/shipping/shipment/${shipmentId}/label`;
+  console.log(`[DPD] Fetching label: GET ${url}`);
 
-    // Try PDF output in various ways
-    for (const qs of ['?outputFormat=PDF', '?outputFormat=pdf', '?format=PDF', '?labelFormat=PDF', '?paperFormat=A4PDF']) {
-      try {
-        console.log(`[DPD] Label try PDF: GET ${base}${qs}`);
-        const { data, headers: rh } = await axios.get(`${base}${qs}`, {
-          headers: { ...headers, Accept: '*/*' },
-          responseType: 'arraybuffer',
-        });
-        const buf = Buffer.from(data);
-        const ct = rh['content-type'] || '';
-        console.log(`[DPD] content-type: ${ct} | size: ${buf.length}`);
-        // Accept only if it looks like PDF (starts with %PDF)
-        if (buf.length > 100 && buf.slice(0, 4).toString() === '%PDF') {
-          console.log(`[DPD] Got PDF — ${buf.length} bytes`);
-          return buf;
-        }
-        console.log(`[DPD] Not PDF (got ${ct}), trying next param`);
-      } catch (err) { logErr(`Label PDF try ${qs}`, err); }
-    }
+  const { data, headers: rh } = await axios.get(url, {
+    headers: { ...headers, Accept: '*/*' },
+    responseType: 'arraybuffer',
+    timeout: 15000,
+  });
 
-    // Fallback: get EPL from API, then generate our own PDF label
-    try {
-      console.log(`[DPD] Label fallback: GET ${base} (EPL → generate PDF)`);
-      const { data, headers: rh } = await axios.get(base, {
-        headers: { ...headers, Accept: '*/*' },
-        responseType: 'arraybuffer',
-      });
-      const buf = Buffer.from(data);
-      const ct = rh['content-type'] || '';
-      if (buf.slice(0, 4).toString() === '%PDF') return buf;
-      // EPL/thermal format — convert to PDF using EPL renderer
-      console.log(`[DPD] DPD returned ${ct} — converting EPL to PDF`);
-      return await eplToPdf(buf.toString('latin1'));
-    } catch (err) {
-      logErr('Label fallback', err);
-    }
-  }
+  const buf = Buffer.from(data);
+  const ct = rh['content-type'] || '';
+  console.log(`[DPD] Label response: ${ct} | ${buf.length} bytes`);
 
-  throw new Error('shipmentId required to fetch DPD label');
+  if (buf.slice(0, 4).toString() === '%PDF') return buf;
+
+  // EPL thermal format → convert to PDF
+  console.log('[DPD] Converting EPL → PDF');
+  return await eplToPdf(buf.toString('latin1'));
 }
 
 /**
