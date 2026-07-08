@@ -3721,19 +3721,29 @@ router.post('/dpd-create', authenticateToken, async (req, res) => {
       return raw;
     }).filter(Boolean);
 
+    const date = despatchDate || new Date().toISOString().slice(0, 10);
+
+    // Run up to 3 shipments in parallel to speed up bulk creates
+    const CONCURRENCY = 3;
     const results = [];
-    for (const order of orders) {
-      try {
-        const result = await createShipment(order, despatchDate || new Date().toISOString().slice(0, 10));
-        results.push(result);
-      } catch (err) {
-        results.push({
-          orderNumber: order.order_number,
-          shopifyOrderId: order.id,
-          error: err.response?.data?.error?.errorMessage || err.message,
-        });
+    for (let i = 0; i < orders.length; i += CONCURRENCY) {
+      const batch = orders.slice(i, i + CONCURRENCY);
+      const settled = await Promise.allSettled(
+        batch.map(order => createShipment(order, date))
+      );
+      for (let j = 0; j < settled.length; j++) {
+        const s = settled[j];
+        if (s.status === 'fulfilled') {
+          results.push(s.value);
+        } else {
+          const order = batch[j];
+          results.push({
+            orderNumber: order.order_number,
+            shopifyOrderId: order.id,
+            error: s.reason?.response?.data?.error?.errorMessage || s.reason?.message,
+          });
+        }
       }
-      await new Promise(r => setTimeout(r, 300));
     }
 
     res.json({ results });
