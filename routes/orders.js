@@ -3895,7 +3895,8 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
     }
     if (!shipments.length) return res.status(400).json({ message: 'shipments is required' });
 
-    const { getLabel, mergeLabels } = await import('../services/dpd.js');
+    const { getLabel } = await import('../services/dpd.js');
+    const { buildS17Pdf } = await import('./preorders.js');
 
     // Pre-fetch order data for label generation
     const orderMap = {};
@@ -3909,7 +3910,8 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
       }
     }
 
-    const pdfBuffers = [];
+    // labelMap: shopify order.id → DPD label PDF buffer (embedded bottom-right of the S/17 slip)
+    const labelMap = new Map();
     const labelledShipments = [];
     for (const s of shipments) {
       const cn = s.consignmentNumber;
@@ -3918,7 +3920,7 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
       try {
         const buf = await getLabel(cn, sid, orderData);
         if (buf && buf.length > 100) {
-          pdfBuffers.push(buf);
+          if (s.shopifyOrderId) labelMap.set(String(s.shopifyOrderId), buf);
           labelledShipments.push(s);
         }
       } catch (err) {
@@ -3926,9 +3928,13 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
       }
     }
 
-    if (!pdfBuffers.length) return res.status(404).json({ message: 'No labels retrieved' });
+    if (!labelledShipments.length) return res.status(404).json({ message: 'No labels retrieved' });
 
-    const merged = await mergeLabels(pdfBuffers);
+    const labelledOrders = labelledShipments
+      .map(s => orderMap[String(s.shopifyOrderId)])
+      .filter(Boolean);
+
+    const merged = Buffer.from(await buildS17Pdf(labelledOrders, labelMap));
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="dpd_labels_${new Date().toISOString().slice(0, 10)}.pdf"`);
     res.send(merged);

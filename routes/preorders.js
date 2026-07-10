@@ -863,7 +863,10 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
       }
 
 
-      // Embed RM label PDF in the label slot, scaled to fit
+      // Embed the label PDF in the label slot, scaled to fit and anchored to the
+      // slot's bottom-right corner — keeps the page-edge margins constant (10mm)
+      // regardless of the label's own aspect ratio (RM labels are tall/narrow,
+      // DPD labels are closer to square).
       const labelBuf = labelMap.get(String(order.id));
       if (labelBuf) {
         try {
@@ -872,8 +875,8 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
           const scale = Math.min(LABEL_W / dims.width, LABEL_H / dims.height);
           const drawW = dims.width  * scale;
           const drawH = dims.height * scale;
-          const drawX = LABEL_LEFT + (LABEL_W - drawW) / 2;
-          const drawY = LABEL_BOTTOM + (LABEL_H - drawH) / 2;
+          const drawX = LABEL_LEFT + LABEL_W - drawW;
+          const drawY = LABEL_BOTTOM;
           page.drawPage(embeddedLabel, { x: drawX, y: drawY, width: drawW, height: drawH });
         } catch (_e) {
           page.drawRectangle({ x: LABEL_LEFT, y: LABEL_BOTTOM, width: LABEL_W, height: LABEL_H, borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 0.5 });
