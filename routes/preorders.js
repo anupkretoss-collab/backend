@@ -410,12 +410,11 @@ export function buildOrderPackingSlipHtml(orders) {
     ].filter(Boolean).join('<br>');
 
     const phone = sa.phone || c.phone || '';
-    const totalQty = (o.line_items || []).reduce((s, li) => s + (li.quantity || 1), 0);
 
     const itemRows = (o.line_items || []).map(li =>
       `<tr>
         <td class="item-name">${li.title}${li.variant_title && li.variant_title !== 'Default Title' ? ' — ' + li.variant_title : ''}</td>
-        <td class="item-qty">${li.quantity} of ${totalQty}</td>
+        <td class="item-qty">${li.quantity} of ${li.quantity}</td>
       </tr>`
     ).join('');
 
@@ -581,10 +580,10 @@ export function buildS17Html(orders, shippingDate) {
     const phone = sa.phone || c.phone || ba.phone || '';
     const email = c.email || o.email || '';
 
-    const itemRows = (o.line_items || []).map((li, idx, arr) =>
+    const itemRows = (o.line_items || []).map(li =>
       `<tr>
         <td class="item-name">${li.title}${li.variant_title && li.variant_title !== 'Default Title' ? ' — ' + li.variant_title : ''}</td>
-        <td class="item-qty">${li.quantity} of ${arr.reduce((s, x) => s + x.quantity, 0)}</td>
+        <td class="item-qty">${li.quantity} of ${li.quantity}</td>
       </tr>`
     ).join('');
 
@@ -999,10 +998,9 @@ export async function buildRecordPdf(orders) {
       y -= 3.5 * MM;
 
       const lineItems = order.line_items || [];
-      const totalQty = lineItems.reduce((s, li) => s + (li.quantity || 1), 0);
       for (const li of lineItems) {
         const title = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
-        const qtyStr = `${li.quantity}/${totalQty}`;
+        const qtyStr = `${li.quantity}/${li.quantity}`;
         const qw = regular.widthOfTextAtSize(qtyStr, 8);
         page.drawText(tr(title, CW - qw - 3 * MM, regular, 8), { x: ML, y, size: 8, font: regular, color: rgb(0, 0, 0) });
         page.drawText(qtyStr, { x: MR - qw, y, size: 8, font: regular, color: rgb(0, 0, 0) });
