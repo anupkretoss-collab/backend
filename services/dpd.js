@@ -563,18 +563,28 @@ export function isConfigured() {
  * parcel number + delivery postcode, via DPD Local's public tracking-site API
  * (the same call the "Enter reference number and postcode" form on
  * track.dpdlocal.co.uk makes). No auth required. Returns null on failure.
+ *
+ * The parcel isn't always indexed on the public tracking site the instant a
+ * shipment is created, so this retries a couple of times before giving up —
+ * called right after label creation during auto-fulfil, where an empty first
+ * attempt would otherwise leave Shopify's tracking_url pointing at the DPD
+ * homepage instead of the parcel's direct link.
  */
-export async function getDpdParcelCode(parcelNumber, postcode) {
+export async function getDpdParcelCode(parcelNumber, postcode, { retries = 2, delayMs = 3000 } = {}) {
   if (!parcelNumber || !postcode) return null;
-  try {
-    const { data } = await axios.get('https://apis.track.dpdlocal.co.uk/v1/reference', {
-      params: { origin: 'PRTK', postcode, referenceNumber: parcelNumber },
-      headers: { Accept: 'application/json' },
-      timeout: 8000,
-    });
-    return data?.data?.[0]?.parcelCode || null;
-  } catch (err) {
-    console.warn(`[DPD] Tracking parcelCode lookup failed for ${parcelNumber}:`, err.message);
-    return null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const { data } = await axios.get('https://apis.track.dpdlocal.co.uk/v1/reference', {
+        params: { origin: 'PRTK', postcode, referenceNumber: parcelNumber },
+        headers: { Accept: 'application/json' },
+        timeout: 8000,
+      });
+      const parcelCode = data?.data?.[0]?.parcelCode || null;
+      if (parcelCode) return parcelCode;
+    } catch (err) {
+      console.warn(`[DPD] Tracking parcelCode lookup failed for ${parcelNumber} (attempt ${attempt + 1}/${retries + 1}):`, err.message);
+    }
+    if (attempt < retries) await new Promise(r => setTimeout(r, delayMs));
   }
+  return null;
 }
