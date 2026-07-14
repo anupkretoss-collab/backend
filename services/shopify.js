@@ -551,6 +551,30 @@ export async function markOrdersFulfilled(
       );
 
       // ============================================
+      // SKIP REFUNDED ORDERS
+      // ============================================
+      // A refunded order should never be marked as fulfilled in Shopify,
+      // regardless of which flow (Royal Mail / DPD) got it this far.
+
+      const orderCheck = await client.get({
+        path: `orders/${orderId}`,
+        query: { fields: 'id,financial_status' },
+      });
+
+      if (orderCheck.body.order?.financial_status === 'refunded') {
+
+        results.push({
+          id: orderId,
+          success: false,
+          error: 'Payment refunded — order was not marked as fulfilled',
+        });
+
+        processed++;
+
+        continue;
+      }
+
+      // ============================================
       // GET FULFILLMENT ORDERS
       // ============================================
 

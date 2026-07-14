@@ -2784,6 +2784,26 @@ router.post(
 
 // ─── Royal Mail Click & Drop integration ─────────────────────────────────────
 
+// Orders that are already fulfilled or refunded should never be sent to Royal
+// Mail / DPD for shipment creation. Splits a parsed-order array into the ones
+// safe to ship and a skipped list (with reason) for the response.
+function splitShippableOrders(orders) {
+  const eligible = [];
+  const skipped = [];
+  for (const order of orders) {
+    if (order.fulfillment_status === 'fulfilled') {
+      skipped.push({ orderNumber: order.order_number, shopifyOrderId: order.id, reason: 'already fulfilled' });
+      continue;
+    }
+    if (order.financial_status === 'refunded') {
+      skipped.push({ orderNumber: order.order_number, shopifyOrderId: order.id, reason: 'payment refunded' });
+      continue;
+    }
+    eligible.push(order);
+  }
+  return { eligible, skipped };
+}
+
 // POST /api/orders/royal-mail-create
 // Body: { orderIds: [], despatchDate: 'YYYY-MM-DD' }
 // Creates shipments in Royal Mail Click & Drop; returns tracking numbers.
@@ -2803,9 +2823,10 @@ router.post('/royal-mail-create', authenticateToken, async (req, res) => {
       `SELECT raw_data FROM orders WHERE id IN (${placeholders})`,
       orderIds
     );
-    const orders = rows
+    const allOrders = rows
       .map(r => (typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data))
       .filter(Boolean);
+    const { eligible: orders, skipped } = splitShippableOrders(allOrders);
 
     const results = [];
     for (const order of orders) {
@@ -2826,7 +2847,7 @@ router.post('/royal-mail-create', authenticateToken, async (req, res) => {
 
     const succeeded = results.filter(r => r.success);
     const failed = results.filter(r => !r.success);
-    res.json({ total: results.length, succeeded: succeeded.length, failed: failed.length, results });
+    res.json({ total: results.length, succeeded: succeeded.length, failed: failed.length, results, skipped });
   } catch (err) {
     console.error('royal-mail-create error:', err);
     res.status(500).json({ message: err.message });
@@ -2924,9 +2945,10 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
       `SELECT id, order_number, raw_data FROM orders WHERE id IN (${placeholders})`,
       orderIds
     );
-    const shopifyOrders = rows
+    const allShopifyOrders = rows
       .map(r => (typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data))
       .filter(Boolean);
+    const { eligible: shopifyOrders, skipped } = splitShippableOrders(allShopifyOrders);
 
     // Map from order_number → DB id so we can return processed Shopify IDs to the frontend
     const dbIdByNum = new Map();
@@ -2993,6 +3015,7 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
       return res.status(502).json({
         message: 'No orders could be matched or created in Click & Drop.',
         errors: failedOrders.map(r => `#${r.orderNumber}: ${r.error}`),
+        skipped,
       });
     }
 
@@ -3042,6 +3065,7 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
           identifiers: allIdentifiers,
           processedShopifyIds,
           trackingNumbers,
+          skipped,
         });
       }
 
@@ -3058,6 +3082,7 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
         labelErrors: labelErrors.slice(0, 5),
         message: `${allIdentifiers.length} order(s) found in Click & Drop but labels could not be downloaded. ${reason}`,
         failed: failedOrders.map(r => r.orderNumber),
+        skipped,
       });
     }
 
@@ -3068,6 +3093,9 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
     res.setHeader('X-Order-Identifiers', allIdentifiers.join(','));
     if (failedOrders.length) {
       res.setHeader('X-Failed-Orders', failedOrders.map(r => r.orderNumber).join(','));
+    }
+    if (skipped.length) {
+      res.setHeader('X-Skipped-Orders', skipped.map(s => `${s.orderNumber}:${s.reason}`).join(','));
     }
     res.send(mergedPdf);
   } catch (err) {
@@ -3175,7 +3203,8 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
       `SELECT id, order_number, raw_data FROM orders WHERE id IN (${placeholders})`,
       orderIds
     );
-    const shopifyOrders = rows.map(r => typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data).filter(Boolean);
+    const allShopifyOrders = rows.map(r => typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data).filter(Boolean);
+    const { eligible: shopifyOrders, skipped } = splitShippableOrders(allShopifyOrders);
     const dbIdByNum = new Map(rows.map(r => [String(r.order_number), String(r.id)]));
 
     // ── 2. Match existing Click & Drop orders by orderReference ───────────────
@@ -3231,7 +3260,7 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
     }
 
     if (!allIdentifiers.length) {
-      return res.status(502).json({ message: 'No orders could be matched or created in Click & Drop.', errors: failedOrders.map(r => `#${r.orderNumber}: ${r.error}`) });
+      return res.status(502).json({ message: 'No orders could be matched or created in Click & Drop.', errors: failedOrders.map(r => `#${r.orderNumber}: ${r.error}`), skipped });
     }
 
     // ── 4. Download labels for matched orders ─────────────────────────────────
@@ -3271,6 +3300,7 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
         identifiers: allIdentifiers, processedShopifyIds, trackingNumbers,
         message: 'Labels not yet generated — go to Click & Drop, apply postage to these orders, then retry.',
         failed: failedOrders.map(r => r.orderNumber),
+        skipped,
       });
     }
 
@@ -3393,6 +3423,7 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
     if (recordsError) res.setHeader('X-Records-Error', recordsError.slice(0, 300));
     if (failedOrders.length) res.setHeader('X-Failed-Orders', failedOrders.map(r => r.orderNumber).join(','));
     if (fulfillErrors.length) res.setHeader('X-Fulfill-Errors', fulfillErrors.join(' | ').slice(0, 500));
+    if (skipped.length) res.setHeader('X-Skipped-Orders', skipped.map(s => `${s.orderNumber}:${s.reason}`).join(','));
     res.send(finalPdf);
   } catch (err) {
     console.error('royal-mail-full-process error:', err);
@@ -3718,10 +3749,11 @@ router.post('/dpd-create', authenticateToken, async (req, res) => {
       orderIds
     );
 
-    const orders = rows.map(r => {
+    const allOrders = rows.map(r => {
       const raw = typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data;
       return raw;
     }).filter(Boolean);
+    const { eligible: orders, skipped } = splitShippableOrders(allOrders);
 
     const date = despatchDate || new Date().toISOString().slice(0, 10);
 
@@ -3748,7 +3780,7 @@ router.post('/dpd-create', authenticateToken, async (req, res) => {
       }
     }
 
-    res.json({ results });
+    res.json({ results, skipped });
   } catch (err) {
     console.error('dpd-create error:', err);
     res.status(500).json({ message: err.message });
