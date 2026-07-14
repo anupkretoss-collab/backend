@@ -516,14 +516,33 @@ export async function markOrdersFulfilled(
 
   let processed = 0;
 
-  // Normalise: accept both [{ shopifyId, trackingNumber }] and plain ID arrays
+  // Normalise: accept both [{ shopifyId, trackingNumber, carrier }] and plain ID arrays
   const orderEntries = orders.map(o =>
     typeof o === 'object' && o.shopifyId
       ? o
-      : { shopifyId: String(o), trackingNumber: null }
+      : { shopifyId: String(o), trackingNumber: null, carrier: 'royal-mail' }
   );
 
-  for (const { shopifyId: orderId, trackingNumber } of orderEntries) {
+  // Shopify recognises these carrier names and auto-generates the correct tracking
+  // URL for each — so no hand-built URL is needed except for Royal Mail (kept as-is
+  // for backwards compatibility with existing behaviour).
+  const CARRIER_INFO = {
+    'royal-mail': {
+      company: 'Royal Mail',
+      url: (n) => `https://www.royalmail.com/portal/rm/track?trackNumber=${n}`,
+    },
+    'dpd': {
+      company: 'DPD Local',
+      // The tracking route is "/parcels/{parcelCode}" where parcelCode includes a
+      // depot suffix (e.g. "15976709918193*21379") resolved via
+      // getDpdParcelCode(parcelNumber, postcode) — callers that have it should pass
+      // it as `trackingUrl` on the order entry (takes priority below). Falls back to
+      // the tracking homepage if the lookup wasn't done/failed.
+      url: () => 'https://track.dpdlocal.co.uk/',
+    },
+  };
+
+  for (const { shopifyId: orderId, trackingNumber, carrier, trackingUrl: trackingUrlOverride } of orderEntries) {
 
     try {
 
@@ -574,10 +593,12 @@ export async function markOrdersFulfilled(
 
       // Include tracking info if available
       if (trackingNumber) {
+        const info = CARRIER_INFO[carrier] || CARRIER_INFO['royal-mail'];
+        const url = trackingUrlOverride || (info.url ? info.url(trackingNumber) : null);
         fulfillmentPayload.tracking_info = {
           number: trackingNumber,
-          company: 'Royal Mail',
-          url: `https://www.royalmail.com/portal/rm/track?trackNumber=${trackingNumber}`,
+          company: info.company,
+          ...(url ? { url } : {}),
         };
       }
 

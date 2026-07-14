@@ -3103,6 +3103,7 @@ router.post('/royal-mail-manifest', authenticateToken, async (req, res) => {
         const ordersToFulfill = shopifyOrderIds.map(id => ({
           shopifyId: String(id),
           trackingNumber: trackingNumbers[String(id)] || null,
+          carrier: 'royal-mail',
         }));
         const fulfillRes = await markOrdersFulfilled(ordersToFulfill, true);
         fulfillmentResults.push(...(fulfillRes.results || []));
@@ -3330,6 +3331,7 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
         const ordersToFulfill = [...dbToApiId.values()].map(({ shopifyApiId, row }) => ({
           shopifyId: shopifyApiId,
           trackingNumber: trackingNumbers[String(row.id)] || null,
+          carrier: 'royal-mail',
         }));
 
         const fulfillRes = await markOrdersFulfilled(ordersToFulfill, true);
@@ -3941,12 +3943,20 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
 
     // Auto-fulfill in Shopify + notify customers (same as Royal Mail manifest flow).
     // Runs after the response so the label download is not delayed.
-    const toFulfill = labelledShipments
-      .filter(s => s.shopifyOrderId)
-      .map(s => ({
+    const { getDpdParcelCode } = await import('../services/dpd.js');
+    const toFulfill = [];
+    for (const s of labelledShipments) {
+      if (!s.shopifyOrderId) continue;
+      const trackingNumber = s.trackingNumber || s.consignmentNumber || null;
+      const zip = orderMap[String(s.shopifyOrderId)]?.shipping_address?.zip;
+      const parcelCode = trackingNumber && zip ? await getDpdParcelCode(trackingNumber, zip) : null;
+      toFulfill.push({
         shopifyId: String(s.shopifyOrderId),
-        trackingNumber: s.trackingNumber || s.consignmentNumber || null,
-      }));
+        trackingNumber,
+        carrier: 'dpd',
+        trackingUrl: parcelCode ? `https://track.dpdlocal.co.uk/parcels/${parcelCode}` : null,
+      });
+    }
     if (toFulfill.length) {
       try {
         const { markOrdersFulfilled } = await import('../services/shopify.js');

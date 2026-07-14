@@ -74,15 +74,21 @@ function buildEmailHtml(order, trackingInfo, hasLogo = false) {
     </tr>`;
   }).join('');
 
+  // trackingInfo.trackingUrl (explicit, resolved link) always wins — e.g. for DPD
+  // this is the "/parcels/{parcelNumber}*{depotCode}" deep link resolved via
+  // getDpdParcelCode(), which can't be guessed from the tracking number alone.
+  const trackingUrl = trackingInfo?.trackingUrl
+    || (trackingInfo?.carrier === 'Royal Mail'
+      ? `https://www.royalmail.com/track-your-item#/tracking-results/${trackingInfo.trackingNumber}`
+      : (trackingInfo?.carrier === 'DPD' || trackingInfo?.carrier === 'DPD Local')
+      ? 'https://track.dpdlocal.co.uk/'
+      : null);
+
   const trackingHtml = trackingInfo?.trackingNumber ? `
     <div style="margin:15px 0;padding:12px 16px;background:#f0f9f0;border-left:3px solid #4caf50;border-radius:4px;">
       <p style="margin:0;font-size:14px;color:#333;">
         <strong>Tracking number:</strong> ${trackingInfo.trackingNumber}
-        ${trackingInfo.carrier === 'Royal Mail'
-          ? `<br><a href="https://www.royalmail.com/track-your-item#/tracking-results/${trackingInfo.trackingNumber}" style="color:#c00;font-size:13px;">Track your parcel →</a>`
-          : trackingInfo.carrier === 'DPD'
-          ? `<br><a href="https://www.dpd.co.uk/apps/tracking/?ref=${trackingInfo.trackingNumber}" style="color:#dc6b00;font-size:13px;">Track your parcel →</a>`
-          : ''}
+        ${trackingUrl ? `<br><a href="${trackingUrl}" style="color:#c00;font-size:13px;">Track your parcel →</a>` : ''}
       </p>
     </div>` : '';
 
@@ -207,7 +213,9 @@ function buildEmailHtml(order, trackingInfo, hasLogo = false) {
 
 /**
  * Send a dispatch notification email for a single order.
- * trackingInfo: { trackingNumber, carrier } — optional
+ * trackingInfo: { trackingNumber, carrier, trackingUrl? } — optional.
+ * trackingUrl, when provided, is used as-is (needed for DPD, whose deep link
+ * can't be derived from the tracking number alone).
  */
 export async function sendOrderNotification(order, trackingInfo = null) {
   const transporter = getTransporter();

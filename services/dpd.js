@@ -557,3 +557,24 @@ export async function mergeLabels(pdfBuffers) {
 export function isConfigured() {
   return Boolean(process.env.DPD_USERNAME && process.env.DPD_PASSWORD);
 }
+
+/**
+ * Resolve the full tracking parcelCode (e.g. "15976709918193*21379") for a
+ * parcel number + delivery postcode, via DPD Local's public tracking-site API
+ * (the same call the "Enter reference number and postcode" form on
+ * track.dpdlocal.co.uk makes). No auth required. Returns null on failure.
+ */
+export async function getDpdParcelCode(parcelNumber, postcode) {
+  if (!parcelNumber || !postcode) return null;
+  try {
+    const { data } = await axios.get('https://apis.track.dpdlocal.co.uk/v1/reference', {
+      params: { origin: 'PRTK', postcode, referenceNumber: parcelNumber },
+      headers: { Accept: 'application/json' },
+      timeout: 8000,
+    });
+    return data?.data?.[0]?.parcelCode || null;
+  } catch (err) {
+    console.warn(`[DPD] Tracking parcelCode lookup failed for ${parcelNumber}:`, err.message);
+    return null;
+  }
+}
