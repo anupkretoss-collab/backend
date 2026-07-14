@@ -3969,6 +3969,32 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
             `UPDATE orders SET fulfillment_status = 'fulfilled' WHERE id IN (${ph})`,
             okIds
           );
+
+          // Send the branded dispatch email for each fulfilled order (mirrors the
+          // Royal Mail full-process flow, which sends this alongside Shopify's own
+          // fulfillment notification).
+          try {
+            const { sendOrderNotification, isConfigured: emailConfigured } = await import('../services/email.js');
+            if (emailConfigured()) {
+              const byId = new Map(toFulfill.map(t => [t.shopifyId, t]));
+              for (const id of okIds) {
+                const order = orderMap[String(id)];
+                const t = byId.get(String(id));
+                if (!order || !t) continue;
+                try {
+                  await sendOrderNotification(order, {
+                    trackingNumber: t.trackingNumber,
+                    carrier: 'DPD',
+                    trackingUrl: t.trackingUrl,
+                  });
+                } catch (mailErr) {
+                  console.warn(`[DPD] Email failed for order ${id}:`, mailErr.message);
+                }
+              }
+            }
+          } catch (mailErr) {
+            console.warn('[DPD] Email step error (non-fatal):', mailErr.message);
+          }
         }
       } catch (fulfillErr) {
         console.error('[DPD] Auto-fulfill error (non-fatal):', fulfillErr.message);
