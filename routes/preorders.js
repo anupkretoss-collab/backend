@@ -832,12 +832,15 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
 
     const hasEmbeddedLabel = labelMap.has(String(order.id));
 
-    // Label slot constants — S/17 style: 100×150mm, bottom-right, 10mm margins
-    const LABEL_W      = 100 * MM;
-    const LABEL_H      = 150 * MM;
+    // Label slot constants — S/17 style: 105×156mm (native DPD/RM label size),
+    // bottom-right, 10mm margins. DPD requires stationery ≥105mm wide and the
+    // label printed at exact 100% scale — a 100mm-wide slot that then shrank
+    // the label to fit was undersizing the barcode below DPD's pass threshold.
+    const LABEL_W      = 105 * MM;
+    const LABEL_H      = 156 * MM;
     const LABEL_LEFT   = W - 10 * MM - LABEL_W;  // 10mm from right edge
     const LABEL_BOTTOM = 10 * MM;
-    const SEP_Y        = LABEL_BOTTOM + LABEL_H + 5 * MM; // 165 mm from bottom
+    const SEP_Y        = LABEL_BOTTOM + LABEL_H + 5 * MM;
 
     if (hasEmbeddedLabel) {
       // Footer anchored at a fixed absolute position just above the separator so
@@ -862,16 +865,18 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
       }
 
 
-      // Embed the label PDF in the label slot, scaled to fit and anchored to the
-      // slot's bottom-right corner — keeps the page-edge margins constant (10mm)
-      // regardless of the label's own aspect ratio (RM labels are tall/narrow,
-      // DPD labels are closer to square).
+      // Embed the label PDF anchored to the slot's bottom-right corner, drawn
+      // at its native 1:1 size — never scaled down. Carriers (DPD in
+      // particular) require labels printed at exact 100% scale; shrinking to
+      // fit an undersized box was pushing the barcode below their minimum
+      // dimensions. Only scale down in the rare case a label is larger than
+      // the slot (e.g. an unusually long EPL), to avoid it running off the page.
       const labelBuf = labelMap.get(String(order.id));
       if (labelBuf) {
         try {
           const [embeddedLabel] = await pdfDoc.embedPdf(labelBuf, [0]);
           const dims = embeddedLabel.size();
-          const scale = Math.min(LABEL_W / dims.width, LABEL_H / dims.height);
+          const scale = Math.min(LABEL_W / dims.width, LABEL_H / dims.height, 1);
           const drawW = dims.width  * scale;
           const drawH = dims.height * scale;
           const drawX = LABEL_LEFT + LABEL_W - drawW;

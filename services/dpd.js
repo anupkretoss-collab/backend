@@ -43,7 +43,12 @@ async function labelizeRender(srcText, widthMm, heightMm, format = 'epl') {
 
 /**
  * Convert EPL buffer to PDF using the labelize binary (pixel-perfect render).
- * Label: 812×822 dots @ 203dpi ≈ 102×103 mm @ 8 dpmm.
+ * DPD's real shipping label is a standard 102×152mm (4"×6") thermal label —
+ * matches labelize's own default canvas size. The EPL's Q command gives the
+ * true label length in dots (8 dots/mm here), so it's read directly rather
+ * than assumed: a previous hardcoded 106×103mm canvas cropped/squashed labels
+ * whose Q length didn't match, which is what caused DPD's test-pack scan
+ * failures (undersized barcode, wrong stationery size).
  * Renders to PNG, then embeds scaled-up on a larger PDF page (A4 width) for easy printing.
  */
 async function eplToPdfLabelize(eplBuf) {
@@ -54,6 +59,10 @@ async function eplToPdfLabelize(eplBuf) {
   // renders fine through labelize as-is and is left alone.
   const eplRaw = eplBuf.toString('latin1');
   const refX = parseInt((eplRaw.match(/^R(\d+)/m) || [, '0'])[1]);
+  const DPMM = 8;
+  const LABEL_W_MM = 102; // fixed — DPD Local thermal roll width
+  const qDots = parseInt((eplRaw.match(/^Q(\d+)/m) || [, ''])[1]);
+  const LABEL_H_MM = qDots > 0 ? Math.ceil(qDots / DPMM) : 152; // 152mm = standard 6" length fallback
   const verticalTexts = []; // rot=1 {x, y, vm, text}
   const bigTexts = [];      // rot=0 all fonts {x, y, font, hm, vm, text} — rendered as bitmap for a uniform typeface
 
@@ -78,7 +87,7 @@ async function eplToPdfLabelize(eplBuf) {
   });
 
   const eplFixed = outLines.filter(Boolean).join('\n');
-  let png = await labelizeRender(eplFixed, 106, 103);
+  let png = await labelizeRender(eplFixed, LABEL_W_MM, LABEL_H_MM);
 
   // Composite the stripped texts back in with an authentic dot-matrix bitmap font.
   if (verticalTexts.length || bigTexts.length) {
@@ -198,11 +207,11 @@ async function eplToPdfLabelize(eplBuf) {
     console.warn('[DPD] PNG upscale skipped:', e.message);
   }
 
-  // PDF page = label size (106×103mm) + small top margin so the top border
-  // line doesn't sit on the page edge
+  // PDF page = label size (LABEL_W_MM × LABEL_H_MM) + small top margin so the
+  // top border line doesn't sit on the page edge
   const MM = 72 / 25.4;
   const topMargin = 4 * MM;
-  const labelW = 106 * MM, labelH = 103 * MM;
+  const labelW = LABEL_W_MM * MM, labelH = LABEL_H_MM * MM;
   const pageW = labelW, pageH = labelH + topMargin;
 
   const pdfDoc = await PDFDocument.create();
