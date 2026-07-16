@@ -2784,14 +2784,16 @@ router.post(
 
 // ─── Royal Mail Click & Drop integration ─────────────────────────────────────
 
-// Orders that are already fulfilled or refunded should never be sent to Royal
-// Mail / DPD for shipment creation. Splits a parsed-order array into the ones
-// safe to ship and a skipped list (with reason) for the response.
-function splitShippableOrders(orders) {
+// Orders with payment refunded should never be sent to Royal Mail / DPD for
+// shipment creation. Royal Mail also excludes already-fulfilled orders; DPD
+// no longer does (pass skipFulfilled: false) since re-sending an already
+// fulfilled order to DPD is a valid flow there. Splits a parsed-order array
+// into the ones safe to ship and a skipped list (with reason) for the response.
+function splitShippableOrders(orders, { skipFulfilled = true } = {}) {
   const eligible = [];
   const skipped = [];
   for (const order of orders) {
-    if (order.fulfillment_status === 'fulfilled') {
+    if (skipFulfilled && order.fulfillment_status === 'fulfilled') {
       skipped.push({ orderNumber: order.order_number, shopifyOrderId: order.id, reason: 'already fulfilled' });
       continue;
     }
@@ -3753,7 +3755,7 @@ router.post('/dpd-create', authenticateToken, async (req, res) => {
       const raw = typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data;
       return raw;
     }).filter(Boolean);
-    const { eligible: orders, skipped } = splitShippableOrders(allOrders);
+    const { eligible: orders, skipped } = splitShippableOrders(allOrders, { skipFulfilled: false });
 
     const date = despatchDate || new Date().toISOString().slice(0, 10);
 
