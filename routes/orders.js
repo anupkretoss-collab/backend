@@ -10,8 +10,29 @@ import pool from '../services/db.js';
 import XLSX from 'xlsx-js-style';
 import { mergeLabels } from '../services/royalMail.js';
 import { buildRecordPdf } from './preorders.js';
+import { mkdir, writeFile } from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 const router = express.Router();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Every generated batch PDF is saved here as a standing copy, in addition to
+// being streamed to the browser — so if the download itself fails partway
+// (slow connection, proxy timeout on a big batch, browser tab closed) the
+// file still exists and doesn't have to be regenerated. Served statically at
+// GET /files/<subfolder>/<filename> (see server.js).
+async function saveGeneratedPdf(buf, subfolder, filename) {
+  try {
+    const dir = path.join(__dirname, '..', 'public', 'generated', subfolder);
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, filename), buf);
+    return `/files/${subfolder}/${filename}`;
+  } catch (err) {
+    console.warn(`[saveGeneratedPdf] Failed to save ${subfolder}/${filename}:`, err.message);
+    return null;
+  }
+}
 
 const backgroundJobs = new Map();
 
@@ -2784,16 +2805,14 @@ router.post(
 
 // ─── Royal Mail Click & Drop integration ─────────────────────────────────────
 
-// Orders with payment refunded should never be sent to Royal Mail / DPD for
-// shipment creation. Royal Mail also excludes already-fulfilled orders; DPD
-// no longer does (pass skipFulfilled: false) since re-sending an already
-// fulfilled order to DPD is a valid flow there. Splits a parsed-order array
+// Orders that are already fulfilled or have payment refunded should never be
+// sent to Royal Mail / DPD for shipment creation. Splits a parsed-order array
 // into the ones safe to ship and a skipped list (with reason) for the response.
-function splitShippableOrders(orders, { skipFulfilled = true } = {}) {
+function splitShippableOrders(orders) {
   const eligible = [];
   const skipped = [];
   for (const order of orders) {
-    if (skipFulfilled && order.fulfillment_status === 'fulfilled') {
+    if (order.fulfillment_status === 'fulfilled') {
       skipped.push({ orderNumber: order.order_number, shopifyOrderId: order.id, reason: 'already fulfilled' });
       continue;
     }
@@ -2913,9 +2932,11 @@ router.post('/royal-mail-labels', authenticateToken, async (req, res) => {
     }
 
     const mergedPdf = await mergeLabels(pdfBuffers);
+    const rmLabelsUrl = await saveGeneratedPdf(mergedPdf, 'royal-mail', `royal_mail_labels_${new Date().toISOString().slice(0, 10)}_${Date.now()}.pdf`);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="royal_mail_labels_${new Date().toISOString().slice(0, 10)}.pdf"`);
     if (errors.length) res.setHeader('X-Failed-Labels', errors.join(','));
+    if (rmLabelsUrl) res.setHeader('X-Saved-File-Url', rmLabelsUrl);
     res.send(mergedPdf);
   } catch (err) {
     console.error('royal-mail-labels error:', err);
@@ -3089,6 +3110,7 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
     }
 
     const mergedPdf = await mergeLabels(pdfBuffers, 1);
+    const autoProcessUrl = await saveGeneratedPdf(mergedPdf, 'royal-mail', `royal_mail_labels_${date}_${Date.now()}.pdf`);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="royal_mail_labels_${date}.pdf"`);
     res.setHeader('X-Shipment-Count', String(pdfBuffers.length));
@@ -3099,6 +3121,7 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
     if (skipped.length) {
       res.setHeader('X-Skipped-Orders', skipped.map(s => `${s.orderNumber}:${s.reason}`).join(','));
     }
+    if (autoProcessUrl) res.setHeader('X-Saved-File-Url', autoProcessUrl);
     res.send(mergedPdf);
   } catch (err) {
     console.error('royal-mail-auto-process error:', err);
@@ -3346,11 +3369,37 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
     const sections = [s17Pdf].filter(Boolean);
     const finalPdf = await mergeLabels(sections, 1);
 
+    // Standing copy on disk — survives even if the browser never receives the
+    // response below (dropped connection, proxy timeout on a big batch, etc).
+    const date = despatchDate || new Date().toISOString().slice(0, 10);
+    const savedFilename = `royal_mail_${date}_${Date.now()}.pdf`;
+    const savedUrl = await saveGeneratedPdf(finalPdf, 'royal-mail', savedFilename);
+
+    // ── 7. Return S/17 integrated label PDF ──────────────────────────────────
+    // Sent BEFORE Shopify auto-fulfil (step 10) runs — that step rate-limits
+    // itself with a 5s pause between orders, so a large batch (20+ orders) can
+    // take minutes. Waiting for it here risked the browser/proxy timing out
+    // the request even though shipments were already created successfully,
+    // making it look like the whole run failed when only the PDF response did.
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="royal_mail_${date}.pdf"`);
+    res.setHeader('X-Shipment-Count', String(labelMap.size));
+    res.setHeader('X-Order-Identifiers', allIdentifiers.join(','));
+    res.setHeader('X-Processed-Shopify-Ids', processedShopifyIds.join(','));
+    res.setHeader('X-Tracking-Numbers', JSON.stringify(trackingNumbers));
+    res.setHeader('X-Has-Labels', labelsPdf ? '1' : '0');
+    res.setHeader('X-Has-S17', s17Pdf ? '1' : '0');
+    res.setHeader('X-Has-Records', recordsPdf ? '1' : '0');
+    if (savedUrl) res.setHeader('X-Saved-File-Url', savedUrl);
+    if (recordsError) res.setHeader('X-Records-Error', recordsError.slice(0, 300));
+    if (failedOrders.length) res.setHeader('X-Failed-Orders', failedOrders.map(r => r.orderNumber).join(','));
+    if (skipped.length) res.setHeader('X-Skipped-Orders', skipped.map(s => `${s.orderNumber}:${s.reason}`).join(','));
+    res.send(finalPdf);
+
     // ── 10. Auto-fulfill in Shopify + send notification email ────────────────
     // processedShopifyIds holds DB row IDs (used for row filtering above).
     // Shopify fulfillment API needs the actual Shopify order ID from raw_data.id.
-    let fulfilledCount = 0;
-    const fulfillErrors = [];
+    // Runs after the response so the PDF download is never delayed by it.
     if (processedShopifyIds.length) {
       try {
         const dbToApiId = new Map();
@@ -3368,13 +3417,10 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
 
         const fulfillRes = await markOrdersFulfilled(ordersToFulfill, true);
         const fulfilled = fulfillRes.results?.filter(r => r.success) || [];
-        const failed = fulfillRes.results?.filter(r => !r.success) || [];
-        fulfilledCount = fulfilled.length;
-        failed.forEach(f => fulfillErrors.push(`${f.id}: ${f.error}`));
+        console.log(`[FullProcess] Auto-fulfilled ${fulfilled.length}/${ordersToFulfill.length} orders`);
 
         // Sync fulfillment status back to local DB so the app reflects Shopify's state
         const fulfilledApiIds = new Set(fulfilled.map(f => String(f.id)));
-        console.log(fulfilledApiIds, "fulfilledApiIds");
         for (const { shopifyApiId, row } of dbToApiId.values()) {
           if (!fulfilledApiIds.has(shopifyApiId)) continue;
           try {
@@ -3384,8 +3430,6 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
             console.warn(`[FullProcess] DB sync failed for ${row.order_number}:`, dbSyncErr.message);
           }
         }
-
-        console.log(fulfilled, "fulfilled");
 
         // Send notification emails for fulfilled orders
         if (fulfilled.length) {
@@ -3406,30 +3450,11 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
         }
       } catch (fulfillErr) {
         console.error('[FullProcess] Shopify fulfillment error (non-fatal):', fulfillErr.message);
-        fulfillErrors.push(fulfillErr.message);
       }
     }
-
-    // ── 7. Return S/17 integrated label PDF ──────────────────────────────────
-    const date = despatchDate || new Date().toISOString().slice(0, 10);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="royal_mail_${date}.pdf"`);
-    res.setHeader('X-Shipment-Count', String(labelMap.size));
-    res.setHeader('X-Order-Identifiers', allIdentifiers.join(','));
-    res.setHeader('X-Processed-Shopify-Ids', processedShopifyIds.join(','));
-    res.setHeader('X-Tracking-Numbers', JSON.stringify(trackingNumbers));
-    res.setHeader('X-Fulfilled-Count', String(fulfilledCount));
-    res.setHeader('X-Has-Labels', labelsPdf ? '1' : '0');
-    res.setHeader('X-Has-S17', s17Pdf ? '1' : '0');
-    res.setHeader('X-Has-Records', recordsPdf ? '1' : '0');
-    if (recordsError) res.setHeader('X-Records-Error', recordsError.slice(0, 300));
-    if (failedOrders.length) res.setHeader('X-Failed-Orders', failedOrders.map(r => r.orderNumber).join(','));
-    if (fulfillErrors.length) res.setHeader('X-Fulfill-Errors', fulfillErrors.join(' | ').slice(0, 500));
-    if (skipped.length) res.setHeader('X-Skipped-Orders', skipped.map(s => `${s.orderNumber}:${s.reason}`).join(','));
-    res.send(finalPdf);
   } catch (err) {
     console.error('royal-mail-full-process error:', err);
-    res.status(500).json({ message: err.message });
+    if (!res.headersSent) res.status(500).json({ message: err.message });
   }
 });
 
@@ -3755,7 +3780,7 @@ router.post('/dpd-create', authenticateToken, async (req, res) => {
       const raw = typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data;
       return raw;
     }).filter(Boolean);
-    const { eligible: orders, skipped } = splitShippableOrders(allOrders, { skipFulfilled: false });
+    const { eligible: orders, skipped } = splitShippableOrders(allOrders);
 
     const date = despatchDate || new Date().toISOString().slice(0, 10);
 
@@ -3971,8 +3996,10 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
       .filter(Boolean);
 
     const merged = Buffer.from(await buildS17Pdf(labelledOrders, labelMap));
+    const dpdLabelsUrl = await saveGeneratedPdf(merged, 'dpd', `dpd_labels_${new Date().toISOString().slice(0, 10)}_${Date.now()}.pdf`);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="dpd_labels_${new Date().toISOString().slice(0, 10)}.pdf"`);
+    if (dpdLabelsUrl) res.setHeader('X-Saved-File-Url', dpdLabelsUrl);
     res.send(merged);
 
     // Auto-fulfill in Shopify + notify customers (same as Royal Mail manifest flow).

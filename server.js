@@ -3,7 +3,11 @@ import cors from 'cors';
 import compression from 'compression';
 import dotenv from 'dotenv';
 import axios from 'axios';
+import path from 'path';
+import { fileURLToPath } from 'url';
 dotenv.config();
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 import { runMigrations } from './services/db.js';
 import authRoutes from './routes/auth.js';
@@ -24,9 +28,13 @@ app.use(
     origin: "*",
     methods: ["GET", "POST", "DELETE", "PUT", "FETCH", "PATCH"],
     allowedHeaders: ["Content-Type", "authorization", "public-request"],
-    exposedHeaders: ["X-Shipment-Count", "X-Order-Identifiers", "X-Failed-Orders", "X-Processed-Shopify-Ids", "X-Tracking-Numbers", "X-Fulfilled-Count", "X-Manifest-Number", "X-Has-Labels", "X-Has-S17", "X-Has-Manifest", "X-Has-Records", "X-Fulfill-Errors", "X-Manifest-Error", "X-Records-Error"],
+    exposedHeaders: ["X-Shipment-Count", "X-Order-Identifiers", "X-Failed-Orders", "X-Processed-Shopify-Ids", "X-Tracking-Numbers", "X-Fulfilled-Count", "X-Manifest-Number", "X-Has-Labels", "X-Has-S17", "X-Has-Manifest", "X-Has-Records", "X-Fulfill-Errors", "X-Manifest-Error", "X-Records-Error", "X-Saved-File-Url", "X-Skipped-Orders"],
   })
 );
+
+// Standing copies of generated batch PDFs (Royal Mail / DPD) — written by
+// routes/orders.js so a failed download doesn't mean redoing the whole batch.
+app.use('/files', express.static(path.join(__dirname, 'public', 'generated')));
 
 const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY;
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET_TOKEN_KEY;
