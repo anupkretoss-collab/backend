@@ -28,7 +28,7 @@ app.use(
     origin: "*",
     methods: ["GET", "POST", "DELETE", "PUT", "FETCH", "PATCH"],
     allowedHeaders: ["Content-Type", "authorization", "public-request"],
-    exposedHeaders: ["X-Shipment-Count", "X-Order-Identifiers", "X-Failed-Orders", "X-Processed-Shopify-Ids", "X-Tracking-Numbers", "X-Fulfilled-Count", "X-Manifest-Number", "X-Has-Labels", "X-Has-S17", "X-Has-Manifest", "X-Has-Records", "X-Fulfill-Errors", "X-Manifest-Error", "X-Records-Error", "X-Saved-File-Url", "X-Skipped-Orders"],
+    exposedHeaders: ["X-Shipment-Count", "X-Order-Identifiers", "X-Failed-Orders", "X-Processed-Shopify-Ids", "X-Tracking-Numbers", "X-Fulfilled-Count", "X-Manifest-Number", "X-Has-Labels", "X-Has-S17", "X-Has-Manifest", "X-Has-Records", "X-Fulfill-Errors", "X-Manifest-Error", "X-Records-Error", "X-Saved-File-Url", "X-Skipped-Orders", "X-Fulfill-Job-Id"],
   })
 );
 

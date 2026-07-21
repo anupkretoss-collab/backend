@@ -3381,6 +3381,17 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
     // take minutes. Waiting for it here risked the browser/proxy timing out
     // the request even though shipments were already created successfully,
     // making it look like the whole run failed when only the PDF response did.
+    // Auto-fulfil runs in the background (below) so the PDF isn't held up by
+    // it — which means its outcome isn't known yet at response time. Register
+    // a job the frontend can poll via the existing GET /job-status/:jobId so
+    // it can show the real result instead of guessing from response headers.
+    const fulfillJobId = processedShopifyIds.length
+      ? `rmfp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      : null;
+    if (fulfillJobId) {
+      backgroundJobs.set(fulfillJobId, { status: 'processing', total: processedShopifyIds.length, fulfilledCount: 0, errors: [] });
+    }
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="royal_mail_${date}.pdf"`);
     res.setHeader('X-Shipment-Count', String(labelMap.size));
@@ -3391,6 +3402,7 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
     res.setHeader('X-Has-S17', s17Pdf ? '1' : '0');
     res.setHeader('X-Has-Records', recordsPdf ? '1' : '0');
     if (savedUrl) res.setHeader('X-Saved-File-Url', savedUrl);
+    if (fulfillJobId) res.setHeader('X-Fulfill-Job-Id', fulfillJobId);
     if (recordsError) res.setHeader('X-Records-Error', recordsError.slice(0, 300));
     if (failedOrders.length) res.setHeader('X-Failed-Orders', failedOrders.map(r => r.orderNumber).join(','));
     if (skipped.length) res.setHeader('X-Skipped-Orders', skipped.map(s => `${s.orderNumber}:${s.reason}`).join(','));
@@ -3417,7 +3429,16 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
 
         const fulfillRes = await markOrdersFulfilled(ordersToFulfill, true);
         const fulfilled = fulfillRes.results?.filter(r => r.success) || [];
+        const failedFulfillments = fulfillRes.results?.filter(r => !r.success) || [];
         console.log(`[FullProcess] Auto-fulfilled ${fulfilled.length}/${ordersToFulfill.length} orders`);
+        if (fulfillJobId) {
+          backgroundJobs.set(fulfillJobId, {
+            status: 'done',
+            total: ordersToFulfill.length,
+            fulfilledCount: fulfilled.length,
+            errors: failedFulfillments.map(f => `${f.id}: ${f.error}`),
+          });
+        }
 
         // Sync fulfillment status back to local DB so the app reflects Shopify's state
         const fulfilledApiIds = new Set(fulfilled.map(f => String(f.id)));
@@ -3450,6 +3471,9 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
         }
       } catch (fulfillErr) {
         console.error('[FullProcess] Shopify fulfillment error (non-fatal):', fulfillErr.message);
+        if (fulfillJobId) {
+          backgroundJobs.set(fulfillJobId, { status: 'error', message: fulfillErr.message });
+        }
       }
     }
   } catch (err) {
@@ -3997,9 +4021,22 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
 
     const merged = Buffer.from(await buildS17Pdf(labelledOrders, labelMap));
     const dpdLabelsUrl = await saveGeneratedPdf(merged, 'dpd', `dpd_labels_${new Date().toISOString().slice(0, 10)}_${Date.now()}.pdf`);
+
+    // Auto-fulfil runs in the background (below) so the PDF isn't held up by
+    // it — its outcome isn't known yet at response time. Register a job the
+    // frontend can poll via GET /job-status/:jobId to show the real result.
+    const dpdFulfillTotal = labelledShipments.filter(s => s.shopifyOrderId).length;
+    const dpdFulfillJobId = dpdFulfillTotal
+      ? `dpdlbl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      : null;
+    if (dpdFulfillJobId) {
+      backgroundJobs.set(dpdFulfillJobId, { status: 'processing', total: dpdFulfillTotal, fulfilledCount: 0, errors: [] });
+    }
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="dpd_labels_${new Date().toISOString().slice(0, 10)}.pdf"`);
     if (dpdLabelsUrl) res.setHeader('X-Saved-File-Url', dpdLabelsUrl);
+    if (dpdFulfillJobId) res.setHeader('X-Fulfill-Job-Id', dpdFulfillJobId);
     res.send(merged);
 
     // Auto-fulfill in Shopify + notify customers (same as Royal Mail manifest flow).
@@ -4024,6 +4061,15 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
         const fulfillRes = await markOrdersFulfilled(toFulfill, true);
         const okIds = fulfillRes.successfulIds || [];
         console.log(`[DPD] Auto-fulfilled ${okIds.length}/${toFulfill.length} orders`);
+        if (dpdFulfillJobId) {
+          const failedFulfillments = (fulfillRes.results || []).filter(r => !r.success);
+          backgroundJobs.set(dpdFulfillJobId, {
+            status: 'done',
+            total: toFulfill.length,
+            fulfilledCount: okIds.length,
+            errors: failedFulfillments.map(f => `${f.id}: ${f.error}`),
+          });
+        }
         if (okIds.length) {
           const ph = okIds.map(() => '?').join(',');
           await pool.query(
@@ -4059,6 +4105,9 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
         }
       } catch (fulfillErr) {
         console.error('[DPD] Auto-fulfill error (non-fatal):', fulfillErr.message);
+        if (dpdFulfillJobId) {
+          backgroundJobs.set(dpdFulfillJobId, { status: 'error', message: fulfillErr.message });
+        }
       }
     }
   } catch (err) {
