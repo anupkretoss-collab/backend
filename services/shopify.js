@@ -31,6 +31,14 @@ const shopify = shopifyApi({
   isEmbeddedApp: false,
 });
 
+// Every request gets this many attempts by default. The underlying SDK only
+// retries a 429/5xx when a `tries` option is explicitly passed — without it,
+// a single rate-limit hit throws immediately instead of backing off. Passing
+// `tries` here makes the SDK handle the wait itself, honouring Shopify's
+// Retry-After header, so callers don't need their own retry logic for the
+// common case of a transient throttle mid-batch.
+const DEFAULT_TRIES = 3;
+
 function getClient() {
   const shopName = process.env.SHOPIFY_SHOP_NAME;
   const accessToken = process.env.SHOPIFY_ACCESS_TOKEN;
@@ -39,7 +47,14 @@ function getClient() {
   }
   const session = shopify.session.customAppSession(shopName);
   session.accessToken = accessToken;
-  return new shopify.clients.Rest({ session });
+  const client = new shopify.clients.Rest({ session });
+
+  return {
+    get: (params) => client.get({ tries: DEFAULT_TRIES, ...params }),
+    post: (params) => client.post({ tries: DEFAULT_TRIES, ...params }),
+    put: (params) => client.put({ tries: DEFAULT_TRIES, ...params }),
+    delete: (params) => client.delete({ tries: DEFAULT_TRIES, ...params }),
+  };
 }
 
 // ─── Generic paginated fetch ──────────────────────────────────────────────────
@@ -426,15 +441,20 @@ export async function bulkTagOrders(
       // ============================================
       // THROTTLE RECOVERY
       // ============================================
+      // The client (see getClient()) already retries 429s internally with
+      // Shopify's own Retry-After backoff — this only fires if that budget
+      // (3 tries) is exhausted, which surfaces as "maximum number of
+      // retries" rather than "throttl...".
 
+      const lowerMsg = message.toLowerCase();
       if (
-        message
-          .toLowerCase()
-          .includes('thrott')
+        err.response?.code === 429 ||
+        lowerMsg.includes('thrott') ||
+        lowerMsg.includes('maximum number of retries')
       ) {
 
         console.log(
-          '⏳ Shopify throttled. Waiting 60 seconds...'
+          '⏳ Shopify still throttled after internal retries. Waiting 60 seconds...'
         );
 
         await sleep(60000);
@@ -583,17 +603,42 @@ export async function markOrdersFulfilled(
           path: `orders/${orderId}/fulfillment_orders`,
         });
 
-      const fulfillmentOrders =
+      const allFulfillmentOrders =
         fulfillmentRes.body
           .fulfillment_orders || [];
 
-      if (!fulfillmentOrders.length) {
+      if (!allFulfillmentOrders.length) {
 
         results.push({
           id: orderId,
           success: false,
           error:
             'No fulfillment orders found',
+        });
+
+        processed++;
+
+        continue;
+      }
+
+      // Only 'open' fulfillment orders can actually accept a new fulfillment.
+      // A stale local cache (order marked "unfulfilled" here but already
+      // fulfilled in Shopify by an earlier/partial run) would otherwise send
+      // a closed one through and get a hard Shopify API error — logged here
+      // as a clear, expected "already fulfilled" outcome instead of a failure.
+      const fulfillmentOrders = allFulfillmentOrders.filter(fo => fo.status === 'open');
+
+      if (!fulfillmentOrders.length) {
+
+        console.log(
+          `ℹ️  Order ${orderId} has no open fulfillment orders (status: ${allFulfillmentOrders.map(fo => fo.status).join(', ')}) — already fulfilled, skipping`
+        );
+
+        results.push({
+          id: orderId,
+          success: false,
+          error:
+            `Already fulfilled (fulfillment order status: ${allFulfillmentOrders.map(fo => fo.status).join(', ')})`,
         });
 
         processed++;
@@ -654,6 +699,15 @@ export async function markOrdersFulfilled(
 
     } catch (err) {
 
+      // Checked BEFORE errorMessage is built below — a throttling error's
+      // own body (e.g. {"errors":"Exceeded 2 calls per second..."}) gets
+      // JSON.stringified into errorMessage next, which silently loses the
+      // "throttling" wording that a message-based check would rely on.
+      // err.response.code is set directly from the HTTP status by the SDK
+      // (see getClient()'s HttpThrottlingError), so it's used here as the
+      // reliable signal instead.
+      const isRateLimited = err.response?.code === 429;
+
       let errorMessage =
         err?.message || 'Unknown error';
 
@@ -679,15 +733,19 @@ export async function markOrdersFulfilled(
       // ============================================
       // THROTTLE RECOVERY
       // ============================================
+      // The client (see getClient()) already retries 429s internally with
+      // Shopify's own Retry-After backoff — this only fires if that budget
+      // (3 tries) is exhausted, which surfaces as "maximum number of
+      // retries" rather than "throttl...".
 
       if (
-        errorMessage
-          .toLowerCase()
-          .includes('thrott')
+        isRateLimited ||
+        errorMessage.toLowerCase().includes('thrott') ||
+        errorMessage.toLowerCase().includes('maximum number of retries')
       ) {
 
         console.log(
-          '⏳ Shopify throttled. Waiting 60 seconds...'
+          '⏳ Shopify still throttled after internal retries. Waiting 60 seconds...'
         );
 
         await sleep(60000);

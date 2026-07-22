@@ -378,6 +378,17 @@ export async function createShipment(order, despatchDate) {
 
   console.log(`[DPD] Parsed — shipmentId: ${shipmentId} | consignmentNumber: ${consignmentNumber} | parcelNumber: ${parcelNumber}`);
 
+  // A 200 response with no usable identifier usually means DPD accepted the
+  // request but couldn't actually book it (e.g. the network/service code
+  // isn't enabled on this account) — dump the raw response so the real
+  // reason is visible in the logs instead of just an empty-looking result.
+  if (!consignmentNumber) {
+    console.error(`[DPD] No consignmentNumber/shipmentId returned for #${order.order_number} (network: ${networkCode}). Raw response:`, JSON.stringify(data));
+  }
+  if (detail?.errors?.length) {
+    console.error(`[DPD] consignmentDetail returned errors for #${order.order_number}:`, JSON.stringify(detail.errors));
+  }
+
   return {
     shipmentId,
     consignmentNumber,
@@ -574,12 +585,15 @@ export function isConfigured() {
  * track.dpdlocal.co.uk makes). No auth required. Returns null on failure.
  *
  * The parcel isn't always indexed on the public tracking site the instant a
- * shipment is created, so this retries a couple of times before giving up —
- * called right after label creation during auto-fulfil, where an empty first
- * attempt would otherwise leave Shopify's tracking_url pointing at the DPD
- * homepage instead of the parcel's direct link.
+ * shipment is created — confirmed in production logs to sometimes take
+ * several minutes, not seconds — so this retries several times before giving
+ * up. Called right after label creation during auto-fulfil, which already
+ * runs in the background after the PDF response is sent, so a longer retry
+ * budget here costs nothing user-facing; an empty result just leaves
+ * Shopify's tracking_url pointing at the DPD homepage instead of the direct
+ * parcel link.
  */
-export async function getDpdParcelCode(parcelNumber, postcode, { retries = 2, delayMs = 3000 } = {}) {
+export async function getDpdParcelCode(parcelNumber, postcode, { retries = 5, delayMs = 5000 } = {}) {
   if (!parcelNumber || !postcode) return null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -595,5 +609,6 @@ export async function getDpdParcelCode(parcelNumber, postcode, { retries = 2, de
     }
     if (attempt < retries) await new Promise(r => setTimeout(r, delayMs));
   }
+  console.warn(`[DPD] Giving up on parcelCode for ${parcelNumber} after ${retries + 1} attempts — tracking_url will fall back to the DPD homepage.`);
   return null;
 }
