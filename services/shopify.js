@@ -57,6 +57,26 @@ function getClient() {
   };
 }
 
+// getClient()'s `tries` option only covers the initial HTTP request — a
+// dropped/truncated gzip stream (ERR_STREAM_PREMATURE_CLOSE) happens while
+// the SDK is decompressing an already-"successful" response body, in
+// response.json(), which is outside that retry path entirely and would
+// otherwise abort the whole sync on one bad page out of potentially
+// hundreds. Retried here instead, since a transient connection drop mid-page
+// has nothing to do with the specific page being fetched — refetching it is
+// always safe (GET, no side effects).
+async function withNetworkRetry(fn, { retries = 3, delayMs = 2000, label = '' } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt === retries) throw err;
+      console.warn(`[Shopify] ${label} failed (attempt ${attempt + 1}/${retries + 1}), retrying: ${err.message}`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+}
+
 // ─── Generic paginated fetch ──────────────────────────────────────────────────
 async function fetchAllPages(path, query = {}) {
   const client = getClient();
@@ -68,7 +88,10 @@ async function fetchAllPages(path, query = {}) {
       ? { limit: 250, page_info: pageInfo }
       : { limit: 250, ...query };
 
-    const response = await client.get({ path, query: q });
+    const response = await withNetworkRetry(
+      () => client.get({ path, query: q }),
+      { label: `GET ${path} (page_info: ${pageInfo || 'first'})` }
+    );
     const data = response.body[path] || response.body.orders || [];
     results = results.concat(data);
 
@@ -109,10 +132,13 @@ export async function fetchShopifyOrdersChunk({
         status: 'any',
       };
 
-    const response = await client.get({
-      path: 'orders',
-      query,
-    });
+    const response = await withNetworkRetry(
+      () => client.get({
+        path: 'orders',
+        query,
+      }),
+      { label: `GET orders chunk (page_info: ${pageInfo || 'first'})` }
+    );
 
     const orders =
       response.body.orders || [];
