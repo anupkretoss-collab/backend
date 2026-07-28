@@ -5,7 +5,19 @@ import dotenv from 'dotenv';
 import axios from 'axios';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import http from 'http';
+import https from 'https';
 dotenv.config();
+
+// Node 19+ switched the default global HTTP(S) agent to keepAlive: true.
+// @shopify/shopify-api still bundles node-fetch@2 internally, which predates
+// that change — on this combination, reused keep-alive sockets to Shopify get
+// closed mid-response under load, surfacing as
+// "FetchError: ... Premature close" (ERR_STREAM_PREMATURE_CLOSE) while
+// decompressing a response body, most visible on larger payloads like
+// customers.json. Forcing a fresh connection per request avoids it.
+http.globalAgent.keepAlive = false;
+https.globalAgent.keepAlive = false;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
