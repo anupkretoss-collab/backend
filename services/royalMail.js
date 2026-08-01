@@ -2,12 +2,29 @@ import axios from 'axios';
 import { PDFDocument } from 'pdf-lib';
 
 const BASE = process.env.ROYAL_MAIL_API_URL || 'https://api.parcel.royalmail.com/api/v1';
-// Royal Mail Click & Drop service codes (affix "48" or "24" to the base code):
-//   TPS48 = Tracked 48 Signature / No Signature  ← used here
+// Royal Mail Click & Drop service codes:
+//   TPS48 = Tracked 48 Signature / No Signature — "royal-mail-parcel" orders (default)
+//   STL1  = 1st Class Letter (untracked)         — "royal-mail-letter" orders
+// Confirmed by the RM account manager via a physical test shipment: Letter
+// and Parcel are different services on their account, not just a label —
+// previously every order was booked as TPS48 regardless of this tag.
 //   TPS24 = Tracked 24 Signature / No Signature
 //   TSS   = Tracked Returns 48
 //   TSN   = Tracked Returns 24
-const SERVICE_CODE = 'TPS48';
+const SERVICE_CODE_PARCEL = process.env.ROYAL_MAIL_PARCEL_SERVICE || 'TPS48';
+const SERVICE_CODE_LETTER = process.env.ROYAL_MAIL_LETTER_SERVICE || 'STL1';
+
+function isLetterOrder(order) {
+  return (order.tags || '').toLowerCase().includes('royal-mail-letter');
+}
+
+function getServiceCode(order) {
+  return isLetterOrder(order) ? SERVICE_CODE_LETTER : SERVICE_CODE_PARCEL;
+}
+
+function getServiceLabel(order) {
+  return isLetterOrder(order) ? 'Royal Mail Letter (1st Class)' : 'Royal Mail Parcel (Tracked 48)';
+}
 
 function authHeaders() {
   return {
@@ -42,6 +59,8 @@ function buildPayload(order, despatchDate) {
   const c = order.customer || {};
   const lineItems = order.line_items || [];
   const weightG   = calcWeightG(lineItems);
+  const serviceCode = getServiceCode(order);
+  const packageFormat = isLetterOrder(order) ? 'letter' : 'parcel';
 
   // Royal Mail requires orderDate in strict UTC ISO-8601 format
   const rawDate  = order.created_at ? new Date(order.created_at) : new Date();
@@ -74,7 +93,7 @@ function buildPayload(order, despatchDate) {
     packages: [
       {
         weightInGrams:           weightG,
-        packageFormatIdentifier: 'parcel',
+        packageFormatIdentifier: packageFormat,
       },
     ],
     orderDate,
@@ -83,10 +102,10 @@ function buildPayload(order, despatchDate) {
     shippingCostCharged: 0,
     total:               parseFloat(order.total_price || 0),
     currencyCode:        order.currency || 'GBP',
-    serviceCode:         SERVICE_CODE,
-    // postageDetails applies TPS48 postage at creation time → assigns tracking number immediately
+    serviceCode:         serviceCode,
+    // postageDetails applies postage at creation time → assigns tracking number immediately (parcel only — letter/STL1 is untracked)
     postageDetails: {
-      serviceCode: SERVICE_CODE,
+      serviceCode: serviceCode,
     },
     // includeLabelInResponse returns the label as base64 directly in the creation response
     label: {
@@ -108,10 +127,11 @@ function buildPayload(order, despatchDate) {
  */
 export async function createShipment(order, despatchDate) {
   const payload = buildPayload(order, despatchDate);
+  const serviceCode = payload.serviceCode;
   // API requires { items: [...] } wrapper — raw array returns 400
   const body = JSON.stringify({ items: [payload] });
 
-  console.log('[RM] POST /orders payload:', body);
+  console.log(`[RM] POST /orders payload (service: ${serviceCode}):`, body);
 
   let resp;
   try {
@@ -136,7 +156,7 @@ export async function createShipment(order, despatchDate) {
     const errs = data.failedOrders[0].errors?.map(e => e.errorMessage).join('; ') || '';
     // Service contract error means the Royal Mail account hasn't enabled this service
     if (errs.toLowerCase().includes('service contract') || errs.toLowerCase().includes('does not exist')) {
-      throw new Error(`Royal Mail service '${SERVICE_CODE}' is not enabled on this account. Contact your Royal Mail account manager to enable Tracked 48 (TPS48). ${errs}`);
+      throw new Error(`Royal Mail service '${serviceCode}' is not enabled on this account. Contact your Royal Mail account manager to enable it. ${errs}`);
     }
     throw new Error(`Royal Mail order creation failed: ${errs}`);
   }
@@ -156,6 +176,7 @@ export async function createShipment(order, despatchDate) {
     orderIdentifier: result.orderIdentifier,
     trackingNumber: result.trackingNumber || null,
     status: result.orderStatus || 'created',
+    service: getServiceLabel(order),
     shopifyOrderId: order.id,
     orderNumber: order.order_number,
     labelBuffer,
