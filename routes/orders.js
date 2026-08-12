@@ -3452,8 +3452,11 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
           }
         }
 
-        // Send notification emails for fulfilled orders
-        if (fulfilled.length) {
+        // Send notification emails for fulfilled orders — temporarily
+        // disabled by default; set SEND_FULFILLMENT_EMAILS=true to re-enable.
+        // (The manual "Send Customer Notifications" button/route is separate
+        // and unaffected — this only gates the automatic post-fulfil email.)
+        if (fulfilled.length && process.env.SEND_FULFILLMENT_EMAILS === 'true') {
           const { sendOrderNotification, isConfigured: emailConfigured } = await import('../services/email.js');
           if (emailConfigured()) {
             for (const { shopifyApiId, raw, row } of dbToApiId.values()) {
@@ -4079,10 +4082,11 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
 
           // Send the branded dispatch email for each fulfilled order (mirrors the
           // Royal Mail full-process flow, which sends this alongside Shopify's own
-          // fulfillment notification).
+          // fulfillment notification). Temporarily disabled by default — set
+          // SEND_FULFILLMENT_EMAILS=true to re-enable.
           try {
             const { sendOrderNotification, isConfigured: emailConfigured } = await import('../services/email.js');
-            if (emailConfigured()) {
+            if (emailConfigured() && process.env.SEND_FULFILLMENT_EMAILS === 'true') {
               const byId = new Map(toFulfill.map(t => [t.shopifyId, t]));
               for (const id of okIds) {
                 const order = orderMap[String(id)];
