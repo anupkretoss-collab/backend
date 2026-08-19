@@ -220,6 +220,14 @@ export async function fetchShopifyOrders() {
   return fetchAllPages('orders', { status: 'any' });
 }
 
+// ─── Fetch orders changed since a given time ──────────────────────────────────
+// Backs the reconciliation poll in server.js — a safety net for missed
+// webhooks (server restart mid-delivery, a dropped request, etc.) rather
+// than a live-update mechanism in its own right.
+export async function fetchRecentlyUpdatedOrders(updatedAtMinIso) {
+  return fetchAllPages('orders', { status: 'any', updated_at_min: updatedAtMinIso });
+}
+
 export async function fetchShopifyProducts() {
   return fetchAllPages('products');
 }
@@ -600,14 +608,26 @@ export async function markOrdersFulfilled(
       // SKIP REFUNDED ORDERS
       // ============================================
       // A refunded order should never be marked as fulfilled in Shopify,
-      // regardless of which flow (Royal Mail / DPD) got it this far.
+      // regardless of which flow (Royal Mail / DPD) got it this far. This is
+      // a LIVE check against Shopify (not the local DB cache) so it still
+      // catches a refund issued moments ago, even if a webhook was missed.
+      //
+      // financial_status alone is NOT reliable here — Shopify can leave it
+      // as "paid" on a partial/goodwill refund (confirmed on a real order:
+      // full refund entries present, financial_status still "paid"). The
+      // presence of any entry in `refunds` is the real signal.
 
       const orderCheck = await client.get({
         path: `orders/${orderId}`,
-        query: { fields: 'id,financial_status' },
+        query: { fields: 'id,financial_status,refunds' },
       });
 
-      if (orderCheck.body.order?.financial_status === 'refunded') {
+      const checkedOrder = orderCheck.body.order;
+      const hasRefund = checkedOrder?.financial_status === 'refunded'
+        || checkedOrder?.financial_status === 'partially_refunded'
+        || (checkedOrder?.refunds || []).length > 0;
+
+      if (hasRefund) {
 
         results.push({
           id: orderId,

@@ -48,6 +48,12 @@ export async function upsertOrder(order) {
   const a = order.shipping_address || {};
   const totalQuantity = (order.line_items || []).reduce((s, li) => s + (li.quantity || 0), 0);
 
+  // Shopify's financial_status can stay "paid" even on a real (often
+  // partial/goodwill) refund — refunds.length is the reliable "don't
+  // dispatch this" signal, checked in addition to financial_status
+  // everywhere fulfilment eligibility is decided.
+  const refundCount = (order.refunds || []).length;
+
   await pool.query(
     `INSERT INTO orders (
       id, order_number, email, financial_status, fulfillment_status,
@@ -55,8 +61,8 @@ export async function upsertOrder(order) {
       customer_id, customer_first_name, customer_last_name, customer_email, customer_phone,
       shipping_name, shipping_address1, shipping_address2, shipping_city,
       shipping_province, shipping_zip, shipping_country, shipping_phone,
-      line_items, shipping_lines, raw_data, total_quantity, created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      line_items, shipping_lines, raw_data, total_quantity, refund_count, created_at, updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON DUPLICATE KEY UPDATE
       order_number        = VALUES(order_number),
       email               = VALUES(email),
@@ -83,6 +89,7 @@ export async function upsertOrder(order) {
       shipping_lines      = VALUES(shipping_lines),
       raw_data            = VALUES(raw_data),
       total_quantity      = VALUES(total_quantity),
+      refund_count        = VALUES(refund_count),
       updated_at          = VALUES(updated_at),
       synced_at           = CURRENT_TIMESTAMP`,
     [
@@ -112,6 +119,7 @@ export async function upsertOrder(order) {
       JSON.stringify(order.shipping_lines || []),
       JSON.stringify(order),
       totalQuantity,
+      refundCount,
       order.created_at ? new Date(order.created_at) : null,
       order.updated_at ? new Date(order.updated_at) : null,
     ]
@@ -123,11 +131,12 @@ export async function batchUpsertOrders(orders, chunkSize = 50) {
   if (!orders.length) return;
   for (let i = 0; i < orders.length; i += chunkSize) {
     const chunk = orders.slice(i, i + chunkSize);
-    const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
+    const placeholders = chunk.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
     const values = chunk.flatMap(order => {
       const c = order.customer || {};
       const a = order.shipping_address || {};
       const qty = (order.line_items || []).reduce((s, li) => s + (li.quantity || 0), 0);
+      const refundCount = (order.refunds || []).length;
       return [
         order.id, order.order_number, order.email || null,
         order.financial_status || null, order.fulfillment_status || null,
@@ -137,7 +146,7 @@ export async function batchUpsertOrders(orders, chunkSize = 50) {
         a.name || null, a.address1 || null, a.address2 || null, a.city || null,
         a.province || null, a.zip || null, a.country || null, a.phone || null,
         JSON.stringify(order.line_items || []), JSON.stringify(order.shipping_lines || []),
-        JSON.stringify(order), qty,
+        JSON.stringify(order), qty, refundCount,
         order.created_at ? new Date(order.created_at) : null,
         order.updated_at ? new Date(order.updated_at) : null,
       ];
@@ -149,7 +158,7 @@ export async function batchUpsertOrders(orders, chunkSize = 50) {
         customer_id, customer_first_name, customer_last_name, customer_email, customer_phone,
         shipping_name, shipping_address1, shipping_address2, shipping_city,
         shipping_province, shipping_zip, shipping_country, shipping_phone,
-        line_items, shipping_lines, raw_data, total_quantity, created_at, updated_at
+        line_items, shipping_lines, raw_data, total_quantity, refund_count, created_at, updated_at
       ) VALUES ${placeholders}
       ON DUPLICATE KEY UPDATE
         order_number=VALUES(order_number), email=VALUES(email),
@@ -162,7 +171,7 @@ export async function batchUpsertOrders(orders, chunkSize = 50) {
         shipping_city=VALUES(shipping_city), shipping_province=VALUES(shipping_province),
         shipping_zip=VALUES(shipping_zip), shipping_country=VALUES(shipping_country),
         shipping_phone=VALUES(shipping_phone), line_items=VALUES(line_items),
-        shipping_lines=VALUES(shipping_lines), raw_data=VALUES(raw_data),
+        shipping_lines=VALUES(shipping_lines), raw_data=VALUES(raw_data), refund_count=VALUES(refund_count),
         total_quantity=VALUES(total_quantity), updated_at=VALUES(updated_at),
         synced_at=CURRENT_TIMESTAMP`,
       values
@@ -2816,7 +2825,14 @@ function splitShippableOrders(orders) {
       skipped.push({ orderNumber: order.order_number, shopifyOrderId: order.id, reason: 'already fulfilled' });
       continue;
     }
-    if (order.financial_status === 'refunded') {
+    // financial_status alone isn't reliable — Shopify can leave it as "paid"
+    // on a partial/goodwill refund. This is a best-effort check against the
+    // local (possibly stale) DB copy; markOrdersFulfilled() does the
+    // authoritative live re-check right before actually fulfilling.
+    const hasRefund = order.financial_status === 'refunded'
+      || order.financial_status === 'partially_refunded'
+      || (order.refunds || []).length > 0;
+    if (hasRefund) {
       skipped.push({ orderNumber: order.order_number, shopifyOrderId: order.id, reason: 'payment refunded' });
       continue;
     }

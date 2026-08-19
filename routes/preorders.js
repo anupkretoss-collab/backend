@@ -804,14 +804,80 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
     y -= 3 * MM;
     y -= 4.5 * MM;
 
+    const hasEmbeddedLabel = labelMap.has(String(order.id));
+
+    // Label slot constants — S/17 style: 105×156mm (native DPD/RM label size),
+    // bottom-right, 10mm margins. DPD requires stationery ≥105mm wide and the
+    // label printed at exact 100% scale — a 100mm-wide slot that then shrank
+    // the label to fit was undersizing the barcode below DPD's pass threshold.
+    // Computed here (before the items list) so the list knows where it has
+    // to stop, rather than running across/through the label.
+    const LABEL_W      = 105 * MM;
+    const LABEL_H      = 156 * MM;
+    const LABEL_LEFT   = W - 10 * MM - LABEL_W;  // 10mm from right edge
+    const LABEL_BOTTOM = 10 * MM;
+    const SEP_Y        = LABEL_BOTTOM + LABEL_H + 5 * MM;
+
+    // A long items list used to just keep drawing down the page with no
+    // bound, running straight across the label (or off the bottom of the
+    // page on very large orders). It now stops above the label slot (or,
+    // on a plain packing slip with no label, above the footer block) and
+    // spills any remainder onto a simple continuation page instead.
+    const ITEMS_FLOOR = hasEmbeddedLabel ? SEP_Y + 3 * MM : 40 * MM;
+
     const lineItems = order.line_items || [];
-    for (const li of lineItems) {
+    let shown = 0;
+    for (; shown < lineItems.length; shown++) {
+      if (y - 5 * MM < ITEMS_FLOOR) break;
+      const li = lineItems[shown];
       const title = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
       const qtyStr = `${li.quantity} of ${li.quantity}`;
       const qtyW = regular.widthOfTextAtSize(qtyStr, 9);
       page.drawText(truncateText(title, CW - qtyW - 5 * MM, regular, 9), { x: ML, y, size: 9, font: regular, color: rgb(0, 0, 0) });
       page.drawText(qtyStr, { x: MR - qtyW, y, size: 9, font: regular, color: rgb(0, 0, 0) });
       y -= 5 * MM;
+    }
+
+    if (shown < lineItems.length) {
+      const remaining = lineItems.length - shown;
+      page.drawText(`+ ${remaining} more item${remaining > 1 ? 's' : ''} — see page ${pdfDoc.getPageCount() + 1}`, {
+        x: ML, y, size: 8, font: regular, color: rgb(0.5, 0.5, 0.5),
+      });
+      y -= 5 * MM;
+
+      // Continuation page(s) for the overflow — appended after this order's
+      // main page, which keeps its UK Plant Passport / label / footer
+      // exactly where they were. Loops (rather than a single extra page) so
+      // a pathologically long order still can't run off a page unbounded.
+      let restItems = lineItems.slice(shown);
+      while (restItems.length) {
+        const contPage = pdfDoc.addPage([210 * MM, 297 * MM]);
+        let cy = H - 15 * MM;
+        contPage.drawText(`Order #${order.order_number} — Items (continued)`, { x: ML, y: cy, size: 10, font: bold, color: rgb(0, 0, 0) });
+        cy -= 8 * MM;
+        contPage.drawText('ITEMS', { x: ML, y: cy, size: 8, font: bold, color: rgb(0, 0, 0) });
+        contPage.drawText('QUANTITY', { x: MR - bold.widthOfTextAtSize('QUANTITY', 8), y: cy, size: 8, font: bold, color: rgb(0, 0, 0) });
+        cy -= 3 * MM;
+        cy -= 4.5 * MM;
+        const CONT_FLOOR = 20 * MM; // no label on a continuation page — just a bottom margin
+        let n = 0;
+        for (; n < restItems.length; n++) {
+          if (cy - 5 * MM < CONT_FLOOR) break;
+          const li = restItems[n];
+          const title = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
+          const qtyStr = `${li.quantity} of ${li.quantity}`;
+          const qtyW = regular.widthOfTextAtSize(qtyStr, 9);
+          contPage.drawText(truncateText(title, CW - qtyW - 5 * MM, regular, 9), { x: ML, y: cy, size: 9, font: regular, color: rgb(0, 0, 0) });
+          contPage.drawText(qtyStr, { x: MR - qtyW, y: cy, size: 9, font: regular, color: rgb(0, 0, 0) });
+          cy -= 5 * MM;
+        }
+        if (n < restItems.length) {
+          contPage.drawText(`+ ${restItems.length - n} more — see page ${pdfDoc.getPageCount() + 1}`, {
+            x: ML, y: cy, size: 8, font: regular, color: rgb(0.5, 0.5, 0.5),
+          });
+        }
+        restItems = restItems.slice(n);
+      }
     }
 
     // if (order.note) {
@@ -829,18 +895,6 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
       page.drawText(line, { x: ML, y, size: 8, font: regular, color: rgb(0, 0, 0) }); y -= 4 * MM;
     }
     y -= 3 * MM;
-
-    const hasEmbeddedLabel = labelMap.has(String(order.id));
-
-    // Label slot constants — S/17 style: 105×156mm (native DPD/RM label size),
-    // bottom-right, 10mm margins. DPD requires stationery ≥105mm wide and the
-    // label printed at exact 100% scale — a 100mm-wide slot that then shrank
-    // the label to fit was undersizing the barcode below DPD's pass threshold.
-    const LABEL_W      = 105 * MM;
-    const LABEL_H      = 156 * MM;
-    const LABEL_LEFT   = W - 10 * MM - LABEL_W;  // 10mm from right edge
-    const LABEL_BOTTOM = 10 * MM;
-    const SEP_Y        = LABEL_BOTTOM + LABEL_H + 5 * MM;
 
     if (hasEmbeddedLabel) {
       // Footer anchored at a fixed absolute position just above the separator so
@@ -1002,14 +1056,65 @@ export async function buildRecordPdf(orders) {
       page.drawText('QTY', { x: MR - bold.widthOfTextAtSize('QTY', 7), y, size: 7, font: bold, color: rgb(0, 0, 0) });
       y -= 3.5 * MM;
 
+      // On a large order the items list used to just keep drawing past the
+      // bottom of this 100×150mm label-sized page — running the note/UK
+      // Plant Passport/footer off the page (or, with the label physically
+      // affixed underneath, straight across it). Reserve the space those
+      // fixed sections need (note + 2 dividers + passport block + footer)
+      // and spill anything that doesn't fit onto a continuation page.
+      const FOOTER_RESERVE = 45 * MM;
+      const ITEMS_FLOOR = 5 * MM + FOOTER_RESERVE;
+
       const lineItems = order.line_items || [];
-      for (const li of lineItems) {
+      let shown = 0;
+      for (; shown < lineItems.length; shown++) {
+        if (y - 4 * MM < ITEMS_FLOOR) break;
+        const li = lineItems[shown];
         const title = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
         const qtyStr = `${li.quantity}/${li.quantity}`;
         const qw = regular.widthOfTextAtSize(qtyStr, 8);
         page.drawText(tr(title, CW - qw - 3 * MM, regular, 8), { x: ML, y, size: 8, font: regular, color: rgb(0, 0, 0) });
         page.drawText(qtyStr, { x: MR - qw, y, size: 8, font: regular, color: rgb(0, 0, 0) });
         y -= 4 * MM;
+      }
+
+      if (shown < lineItems.length) {
+        const remaining = lineItems.length - shown;
+        page.drawText(`+ ${remaining} more item${remaining > 1 ? 's' : ''} — see page ${pdfDoc.getPageCount() + 1}`, {
+          x: ML, y, size: 6.5, font: regular, color: rgb(0.5, 0.5, 0.5),
+        });
+        y -= 3.5 * MM;
+
+        // Continuation page(s), same label size, items only — loops so a
+        // pathologically long order still can't run off a page unbounded.
+        let restItems = lineItems.slice(shown);
+        while (restItems.length) {
+          const contPage = pdfDoc.addPage([W, H]);
+          let cy = H - 7 * MM;
+          contPage.drawText(tr(`#${order.order_number} — Items (cont.)`, CW, bold, 8), { x: ML, y: cy, size: 8, font: bold, color: rgb(0, 0, 0) });
+          cy -= 5 * MM;
+          contPage.drawText('ITEMS', { x: ML, y: cy, size: 7, font: bold, color: rgb(0, 0, 0) });
+          contPage.drawText('QTY', { x: MR - bold.widthOfTextAtSize('QTY', 7), y: cy, size: 7, font: bold, color: rgb(0, 0, 0) });
+          cy -= 3.5 * MM;
+          const CONT_FLOOR = 5 * MM;
+          let n = 0;
+          for (; n < restItems.length; n++) {
+            if (cy - 4 * MM < CONT_FLOOR) break;
+            const li = restItems[n];
+            const title = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
+            const qtyStr = `${li.quantity}/${li.quantity}`;
+            const qw = regular.widthOfTextAtSize(qtyStr, 8);
+            contPage.drawText(tr(title, CW - qw - 3 * MM, regular, 8), { x: ML, y: cy, size: 8, font: regular, color: rgb(0, 0, 0) });
+            contPage.drawText(qtyStr, { x: MR - qw, y: cy, size: 8, font: regular, color: rgb(0, 0, 0) });
+            cy -= 4 * MM;
+          }
+          if (n < restItems.length) {
+            contPage.drawText(`+ ${restItems.length - n} more — see page ${pdfDoc.getPageCount() + 1}`, {
+              x: ML, y: cy, size: 6.5, font: regular, color: rgb(0.5, 0.5, 0.5),
+            });
+          }
+          restItems = restItems.slice(n);
+        }
       }
 
       if (order.note) {

@@ -2,6 +2,7 @@ import express from 'express';
 import crypto from 'crypto';
 
 import { deleteProduct, upsertCustomer, upsertOrder, upsertProduct } from './orders.js';
+import { fetchOrder } from '../services/shopify.js';
 
 const router = express.Router();
 
@@ -97,6 +98,25 @@ router.post(
           await upsertOrder(payload);
 
           console.log(`✅ Cancelled order synced #${payload.order_number}`);
+          break;
+
+        case 'refunds/create':
+          // This payload is the refund itself, not the order — Shopify's
+          // financial_status can stay "paid" on a partial/goodwill refund
+          // (confirmed on a real order), so orders/updated alone isn't
+          // trusted to always carry this. Re-fetch the full order so
+          // refund_count and financial_status land in the DB together.
+          console.log(`💸 Refund created for order ${payload.order_id}`);
+
+          try {
+            const refundedOrder = await fetchOrder(payload.order_id);
+            if (refundedOrder) {
+              await upsertOrder(refundedOrder);
+              console.log(`✅ Order #${refundedOrder.order_number} re-synced after refund`);
+            }
+          } catch (fetchErr) {
+            console.error(`❌ Failed to re-fetch order ${payload.order_id} after refund:`, fetchErr.message);
+          }
           break;
 
         // // ====================================================

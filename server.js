@@ -23,10 +23,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 import { runMigrations } from './services/db.js';
 import authRoutes from './routes/auth.js';
-import ordersRoutes from './routes/orders.js';
+import ordersRoutes, { batchUpsertOrders, invalidateMetaCache } from './routes/orders.js';
 import preordersRoutes from './routes/preorders.js';
 import delayedRoutes from './routes/delayed.js';
 import webhookRoutes from './routes/webhooks.js';
+import { fetchRecentlyUpdatedOrders } from './services/shopify.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -135,3 +136,40 @@ runMigrations()
     console.warn('   API routes requiring DB will return 503 until a database is connected.');
     console.warn('   Set DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME as environment variables.');
   });
+
+// ─── Webhook safety net ────────────────────────────────────────────────────
+// Webhooks can be missed (server mid-restart/deploy, a dropped request,
+// Shopify's own retry window exhausted) with nothing to signal it happened —
+// the local order silently goes stale. Rather than trying to detect/retry
+// individual missed webhooks, this just polls Shopify every few minutes for
+// anything changed recently and re-syncs it, so a missed webhook is caught
+// within one poll cycle instead of staying wrong indefinitely. The lookback
+// window is wider than the poll interval so a slow/delayed run still overlaps
+// the previous one with no gap.
+const RECONCILE_INTERVAL_MS = 5 * 60 * 1000;   // 5 minutes
+const RECONCILE_LOOKBACK_MS = 20 * 60 * 1000;  // 20 minutes
+let reconciling = false;
+
+async function reconcileRecentOrders() {
+  if (reconciling) return; // previous run still in flight — skip this tick rather than overlap
+  if (!process.env.SHOPIFY_SHOP_NAME || !process.env.SHOPIFY_ACCESS_TOKEN) return;
+  reconciling = true;
+  try {
+    const since = new Date(Date.now() - RECONCILE_LOOKBACK_MS).toISOString();
+    const orders = await fetchRecentlyUpdatedOrders(since);
+    if (orders.length) {
+      await batchUpsertOrders(orders);
+      invalidateMetaCache();
+      console.log(`🔄 Reconcile: re-synced ${orders.length} recently-updated order(s) (webhook safety net)`);
+    }
+  } catch (err) {
+    console.warn('⚠️  Reconcile poll failed (will retry next cycle):', err.message);
+  } finally {
+    reconciling = false;
+  }
+}
+
+setInterval(reconcileRecentOrders, RECONCILE_INTERVAL_MS);
+// Also run shortly after boot, so a webhook missed just before a restart
+// isn't left stale for the first full interval.
+setTimeout(reconcileRecentOrders, 30 * 1000);

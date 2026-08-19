@@ -234,6 +234,8 @@ export async function runMigrations() {
 
         total_quantity INT NOT NULL DEFAULT 0,
 
+        refund_count INT NOT NULL DEFAULT 0,
+
         created_at DATETIME,
 
         updated_at DATETIME,
@@ -246,6 +248,15 @@ export async function runMigrations() {
     // Add total_quantity to existing tables that predate this migration
     try {
       await conn.query(`ALTER TABLE orders ADD COLUMN total_quantity INT NOT NULL DEFAULT 0`);
+    } catch { }
+
+    // refund_count — Shopify's financial_status can stay "paid" even when an
+    // order has a real (often partial/goodwill) refund on it, so it can't be
+    // trusted alone to flag "don't dispatch this". order.refunds.length is
+    // the reliable signal; stored separately so it can be filtered/displayed
+    // without re-parsing raw_data every time.
+    try {
+      await conn.query(`ALTER TABLE orders ADD COLUMN refund_count INT NOT NULL DEFAULT 0`);
     } catch { }
 
     // =========================================================
