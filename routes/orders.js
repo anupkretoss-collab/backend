@@ -34,6 +34,21 @@ async function saveGeneratedPdf(buf, subfolder, filename) {
   }
 }
 
+// HTTP header values are restricted to a narrow character set — a raw
+// caught error message (which can contain newlines from a stack-trace-style
+// message, or a curly quote/£ sign/other non-Latin1 character pulled in
+// from order data) makes Node throw "Invalid character in header content"
+// on res.setHeader, which crashes the response entirely (the browser only
+// ever sees a failed request, not the PDF that was already built). Strip
+// anything outside safe printable ASCII before it goes on a header.
+function safeHeaderValue(str, maxLen = 300) {
+  return String(str)
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[^\x20-\x7E]/g, '')
+    .slice(0, maxLen)
+    .trim();
+}
+
 const backgroundJobs = new Map();
 
 // In-memory cache for /meta — invalidated on sync
@@ -3135,7 +3150,7 @@ router.post('/royal-mail-auto-process', authenticateToken, async (req, res) => {
       res.setHeader('X-Failed-Orders', failedOrders.map(r => r.orderNumber).join(','));
     }
     if (skipped.length) {
-      res.setHeader('X-Skipped-Orders', skipped.map(s => `${s.orderNumber}:${s.reason}`).join(','));
+      res.setHeader('X-Skipped-Orders', safeHeaderValue(skipped.map(s => `${s.orderNumber}:${s.reason}`).join(',')));
     }
     if (autoProcessUrl) res.setHeader('X-Saved-File-Url', autoProcessUrl);
     res.send(mergedPdf);
@@ -3419,9 +3434,9 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
     res.setHeader('X-Has-Records', recordsPdf ? '1' : '0');
     if (savedUrl) res.setHeader('X-Saved-File-Url', savedUrl);
     if (fulfillJobId) res.setHeader('X-Fulfill-Job-Id', fulfillJobId);
-    if (recordsError) res.setHeader('X-Records-Error', recordsError.slice(0, 300));
+    if (recordsError) res.setHeader('X-Records-Error', safeHeaderValue(recordsError));
     if (failedOrders.length) res.setHeader('X-Failed-Orders', failedOrders.map(r => r.orderNumber).join(','));
-    if (skipped.length) res.setHeader('X-Skipped-Orders', skipped.map(s => `${s.orderNumber}:${s.reason}`).join(','));
+    if (skipped.length) res.setHeader('X-Skipped-Orders', safeHeaderValue(skipped.map(s => `${s.orderNumber}:${s.reason}`).join(',')));
     res.send(finalPdf);
 
     // ── 10. Auto-fulfill in Shopify + send notification email ────────────────
