@@ -14,6 +14,50 @@ import { upsertOrder } from './orders.js';
 
 const router = express.Router();
 
+// ─── Packing-slip item-row highlighting ────────────────────────────────────────
+// Flags anything a picker could miss at a glance: multi-unit lines (qty > 1,
+// highlighted yellow like a marker pen) and items with a real variant —
+// size/colour/etc. (highlighted blue), so it isn't confused for a plain
+// single-unit "Default Title" line. Shared by every PDF packing-slip builder.
+const HIGHLIGHT_QTY = rgb(1, 0.92, 0.3);
+const HIGHLIGHT_VARIANT = rgb(0.72, 0.86, 1);
+
+function drawHighlight(page, x, y, width, size, color) {
+  if (width <= 0) return;
+  page.drawRectangle({ x: x - 1, y: y - size * 0.22, width: width + 2, height: size * 1.15, color });
+}
+
+// Draws one "title — variant" / "N of N" items-table row, highlighting the
+// variant portion of the title (if any) and the quantity (if > 1) before
+// drawing the text on top. `truncate` is the caller's own ellipsis helper
+// (each PDF builder defines its own, closing over its font metrics).
+function drawItemRow(page, li, { x, rightEdge, y, contentWidth, gap, font, size, qtyFormat, truncate }) {
+  const title = li.title || '';
+  const variant = li.variant_title && li.variant_title !== 'Default Title' ? li.variant_title : '';
+  const fullTitle = title + (variant ? ` — ${variant}` : '');
+  const qtyStr = qtyFormat(li.quantity);
+  const qtyW = font.widthOfTextAtSize(qtyStr, size);
+  const shownTitle = truncate(fullTitle, contentWidth - qtyW - gap, font, size);
+
+  if (variant) {
+    const sep = ' — ';
+    const sepIdx = shownTitle.indexOf(sep);
+    if (sepIdx !== -1) {
+      const prefix = shownTitle.slice(0, sepIdx + sep.length);
+      const variantPart = shownTitle.slice(sepIdx + sep.length);
+      const prefixW = font.widthOfTextAtSize(prefix, size);
+      const variantW = font.widthOfTextAtSize(variantPart, size);
+      drawHighlight(page, x + prefixW, y, variantW, size, HIGHLIGHT_VARIANT);
+    }
+  }
+  if (Number(li.quantity) > 1) {
+    drawHighlight(page, rightEdge - qtyW, y, qtyW, size, HIGHLIGHT_QTY);
+  }
+
+  page.drawText(shownTitle, { x, y, size, font, color: rgb(0, 0, 0) });
+  page.drawText(qtyStr, { x: rightEdge - qtyW, y, size, font, color: rgb(0, 0, 0) });
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
@@ -411,12 +455,17 @@ export function buildOrderPackingSlipHtml(orders) {
 
     const phone = sa.phone || c.phone || '';
 
-    const itemRows = (o.line_items || []).map(li =>
-      `<tr>
-        <td class="item-name">${li.title}${li.variant_title && li.variant_title !== 'Default Title' ? ' — ' + li.variant_title : ''}</td>
-        <td class="item-qty">${li.quantity} of ${li.quantity}</td>
-      </tr>`
-    ).join('');
+    const itemRows = (o.line_items || []).map(li => {
+      const variant = li.variant_title && li.variant_title !== 'Default Title' ? li.variant_title : '';
+      const nameHtml = variant ? `${li.title} — <span class="hl-variant">${variant}</span>` : `${li.title}`;
+      const qtyHtml = Number(li.quantity) > 1
+        ? `<span class="hl-qty">${li.quantity} of ${li.quantity}</span>`
+        : `${li.quantity} of ${li.quantity}`;
+      return `<tr>
+        <td class="item-name">${nameHtml}</td>
+        <td class="item-qty">${qtyHtml}</td>
+      </tr>`;
+    }).join('');
 
     const orderDate = o.created_at
       ? new Date(o.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
@@ -522,6 +571,8 @@ export function buildOrderPackingSlipHtml(orders) {
   .item-name { width: 80%; }
   .item-qty { width: 20%; text-align: right; white-space: nowrap; }
   th.item-qty { text-align: right; }
+  .hl-qty { background: #fff566; padding: 1px 4px; border-radius: 2px; font-weight: bold; }
+  .hl-variant { background: #b8dbff; padding: 1px 4px; border-radius: 2px; }
   .passport-section { font-size: 9pt; line-height: 1.8; margin-bottom: 4mm; color: #333; }
   .footer { font-size: 9pt; text-align: center; color: #555; line-height: 1.8; }
 
@@ -580,12 +631,17 @@ export function buildS17Html(orders, shippingDate) {
     const phone = sa.phone || c.phone || ba.phone || '';
     const email = c.email || o.email || '';
 
-    const itemRows = (o.line_items || []).map(li =>
-      `<tr>
-        <td class="item-name">${li.title}${li.variant_title && li.variant_title !== 'Default Title' ? ' — ' + li.variant_title : ''}</td>
-        <td class="item-qty">${li.quantity} of ${li.quantity}</td>
-      </tr>`
-    ).join('');
+    const itemRows = (o.line_items || []).map(li => {
+      const variant = li.variant_title && li.variant_title !== 'Default Title' ? li.variant_title : '';
+      const nameHtml = variant ? `${li.title} — <span class="hl-variant">${variant}</span>` : `${li.title}`;
+      const qtyHtml = Number(li.quantity) > 1
+        ? `<span class="hl-qty">${li.quantity} of ${li.quantity}</span>`
+        : `${li.quantity} of ${li.quantity}`;
+      return `<tr>
+        <td class="item-name">${nameHtml}</td>
+        <td class="item-qty">${qtyHtml}</td>
+      </tr>`;
+    }).join('');
 
     const orderDate = o.created_at
       ? new Date(o.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
@@ -679,6 +735,8 @@ export function buildS17Html(orders, shippingDate) {
   .items-table td { font-size: 9pt; padding: 1mm 0; }
   .item-qty { text-align: right; white-space: nowrap; }
   .item-name { width: 85%; }
+  .hl-qty { background: #fff566; padding: 1px 4px; border-radius: 2px; font-weight: bold; }
+  .hl-variant { background: #b8dbff; padding: 1px 4px; border-radius: 2px; }
 
   .note { font-size: 8pt; color: #b45309; margin-top: 2mm; }
 
@@ -829,12 +887,10 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
     let shown = 0;
     for (; shown < lineItems.length; shown++) {
       if (y - 5 * MM < ITEMS_FLOOR) break;
-      const li = lineItems[shown];
-      const title = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
-      const qtyStr = `${li.quantity} of ${li.quantity}`;
-      const qtyW = regular.widthOfTextAtSize(qtyStr, 9);
-      page.drawText(truncateText(title, CW - qtyW - 5 * MM, regular, 9), { x: ML, y, size: 9, font: regular, color: rgb(0, 0, 0) });
-      page.drawText(qtyStr, { x: MR - qtyW, y, size: 9, font: regular, color: rgb(0, 0, 0) });
+      drawItemRow(page, lineItems[shown], {
+        x: ML, rightEdge: MR, y, contentWidth: CW, gap: 5 * MM,
+        font: regular, size: 9, qtyFormat: q => `${q} of ${q}`, truncate: truncateText,
+      });
       y -= 5 * MM;
     }
 
@@ -863,12 +919,10 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
         let n = 0;
         for (; n < restItems.length; n++) {
           if (cy - 5 * MM < CONT_FLOOR) break;
-          const li = restItems[n];
-          const title = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
-          const qtyStr = `${li.quantity} of ${li.quantity}`;
-          const qtyW = regular.widthOfTextAtSize(qtyStr, 9);
-          contPage.drawText(truncateText(title, CW - qtyW - 5 * MM, regular, 9), { x: ML, y: cy, size: 9, font: regular, color: rgb(0, 0, 0) });
-          contPage.drawText(qtyStr, { x: MR - qtyW, y: cy, size: 9, font: regular, color: rgb(0, 0, 0) });
+          drawItemRow(contPage, restItems[n], {
+            x: ML, rightEdge: MR, y: cy, contentWidth: CW, gap: 5 * MM,
+            font: regular, size: 9, qtyFormat: q => `${q} of ${q}`, truncate: truncateText,
+          });
           cy -= 5 * MM;
         }
         if (n < restItems.length) {
@@ -1069,12 +1123,10 @@ export async function buildRecordPdf(orders) {
       let shown = 0;
       for (; shown < lineItems.length; shown++) {
         if (y - 4 * MM < ITEMS_FLOOR) break;
-        const li = lineItems[shown];
-        const title = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
-        const qtyStr = `${li.quantity}/${li.quantity}`;
-        const qw = regular.widthOfTextAtSize(qtyStr, 8);
-        page.drawText(tr(title, CW - qw - 3 * MM, regular, 8), { x: ML, y, size: 8, font: regular, color: rgb(0, 0, 0) });
-        page.drawText(qtyStr, { x: MR - qw, y, size: 8, font: regular, color: rgb(0, 0, 0) });
+        drawItemRow(page, lineItems[shown], {
+          x: ML, rightEdge: MR, y, contentWidth: CW, gap: 3 * MM,
+          font: regular, size: 8, qtyFormat: q => `${q}/${q}`, truncate: tr,
+        });
         y -= 4 * MM;
       }
 
@@ -1100,12 +1152,10 @@ export async function buildRecordPdf(orders) {
           let n = 0;
           for (; n < restItems.length; n++) {
             if (cy - 4 * MM < CONT_FLOOR) break;
-            const li = restItems[n];
-            const title = li.title + (li.variant_title && li.variant_title !== 'Default Title' ? ` — ${li.variant_title}` : '');
-            const qtyStr = `${li.quantity}/${li.quantity}`;
-            const qw = regular.widthOfTextAtSize(qtyStr, 8);
-            contPage.drawText(tr(title, CW - qw - 3 * MM, regular, 8), { x: ML, y: cy, size: 8, font: regular, color: rgb(0, 0, 0) });
-            contPage.drawText(qtyStr, { x: MR - qw, y: cy, size: 8, font: regular, color: rgb(0, 0, 0) });
+            drawItemRow(contPage, restItems[n], {
+              x: ML, rightEdge: MR, y: cy, contentWidth: CW, gap: 3 * MM,
+              font: regular, size: 8, qtyFormat: q => `${q}/${q}`, truncate: tr,
+            });
             cy -= 4 * MM;
           }
           if (n < restItems.length) {

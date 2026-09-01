@@ -2198,6 +2198,101 @@ router.get(
   }
 );
 
+// ─── GET /api/orders/export — order data as XLSX (Order/Product/Shipping/Qty) ─
+// Same shape as /packing-slip-report but for ALL products (not just
+// horticultural), respecting the same filters as the Orders page list
+// (search, tags, varieties, shipping, payment, fulfillment, dates, etc.).
+router.get('/export', authenticateToken, async (req, res) => {
+  try {
+    const { whereSql, queryParams } = buildOrderFilters(req.query);
+
+    const [rows] = await pool.query(
+      `SELECT order_number, line_items, shipping_lines FROM orders ${whereSql} ORDER BY order_number ASC`,
+      queryParams
+    );
+
+    const data = [['Order Name', 'Product Title', 'Shipping Title', 'Net Quantity']];
+
+    for (const row of rows) {
+      const lineItems = typeof row.line_items === 'string' ? JSON.parse(row.line_items) : (row.line_items || []);
+      if (!lineItems.length) continue;
+
+      const shippingLines = typeof row.shipping_lines === 'string' ? JSON.parse(row.shipping_lines) : (row.shipping_lines || []);
+      const shippingTitle = shippingLines?.[0]?.title || '';
+
+      lineItems.forEach((item, index) => {
+        const title = item.title + (item.variant_title && item.variant_title !== 'Default Title' ? ` — ${item.variant_title}` : '');
+        data.push([
+          index === 0 ? `#${row.order_number}` : '',
+          title,
+          shippingTitle,
+          Number(item.quantity || 1),
+        ]);
+      });
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    ws['!cols'] = [{ wch: 20 }, { wch: 85 }, { wch: 35 }, { wch: 15 }];
+
+    // Merge the Order Name column down across each order's line items
+    const merges = [];
+    let startRow = 1;
+    for (let i = 2; i < data.length; i++) {
+      if (data[i][0] !== '') {
+        const endRow = i - 1;
+        if (endRow > startRow) merges.push({ s: { r: startRow, c: 0 }, e: { r: endRow, c: 0 } });
+        startRow = i;
+      }
+    }
+    if (data.length - 1 > startRow) merges.push({ s: { r: startRow, c: 0 }, e: { r: data.length - 1, c: 0 } });
+    ws['!merges'] = merges;
+
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    for (let R = range.s.r; R <= range.e.r; ++R) {
+      for (let C = range.s.c; C <= range.e.c; ++C) {
+        const cellRef = XLSX.utils.encode_cell({ r: R, c: C });
+        if (!ws[cellRef]) continue;
+
+        ws[cellRef].s = {
+          border: {
+            top: { style: 'thin', color: { rgb: '000000' } },
+            bottom: { style: 'thin', color: { rgb: '000000' } },
+            left: { style: 'thin', color: { rgb: '000000' } },
+            right: { style: 'thin', color: { rgb: '000000' } },
+          },
+          alignment: { vertical: 'center', horizontal: C === 1 ? 'left' : 'center', wrapText: true },
+          font: { name: 'Arial', sz: 11 },
+        };
+
+        // Flag multi-unit lines, same as the packing-slip export
+        if (R > 0 && C === 3) {
+          const val = Number(ws[cellRef].v);
+          if (val > 1) ws[cellRef].s.fill = { fgColor: { rgb: 'C6EFCE' } };
+          else if (val <= 0) ws[cellRef].s.fill = { fgColor: { rgb: 'FFC7CE' } };
+        }
+
+        if (R === 0) {
+          ws[cellRef].s.font = { bold: true, sz: 12 };
+          ws[cellRef].s.fill = { fgColor: { rgb: 'D9E2F3' } };
+          ws[cellRef].s.alignment = { horizontal: 'center', vertical: 'center' };
+        }
+      }
+    }
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Orders');
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    const fileName = `ORDERS_EXPORT_${new Date().toISOString().split('T')[0]}.xlsx`;
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buffer);
+  } catch (err) {
+    console.error('Orders export error:', err);
+    res.status(500).json({ message: 'Failed to export orders', error: err.message });
+  }
+});
+
 router.post(
   '/sync-orders-chunk',
   authenticateToken,
