@@ -2222,11 +2222,20 @@ router.get('/export', authenticateToken, async (req, res) => {
 
       lineItems.forEach((item, index) => {
         const title = item.title + (item.variant_title && item.variant_title !== 'Default Title' ? ` — ${item.variant_title}` : '');
+        // current_quantity = quantity minus anything since refunded/removed via
+        // an order edit (Shopify API 2022-01+). Falls back to quantity for
+        // older synced orders that predate this field. Using plain `quantity`
+        // here would keep showing a refunded/removed line at its original
+        // count — the same "still looks normal after a refund" trap as the
+        // Orders list financial_status issue.
+        const netQty = item.current_quantity !== undefined && item.current_quantity !== null
+          ? Number(item.current_quantity)
+          : Number(item.quantity || 1);
         data.push([
           index === 0 ? `#${row.order_number}` : '',
           title,
           shippingTitle,
-          Number(item.quantity || 1),
+          netQty,
         ]);
       });
     }
