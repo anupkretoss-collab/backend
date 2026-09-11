@@ -8,7 +8,7 @@ import {
 } from '../services/shopify.js';
 import pool from '../services/db.js';
 import XLSX from 'xlsx-js-style';
-import { mergeLabels } from '../services/royalMail.js';
+import { mergeLabels, pdfPageCount } from '../services/royalMail.js';
 import { buildRecordPdf } from './preorders.js';
 import { mkdir, writeFile } from 'fs/promises';
 import path from 'path';
@@ -3464,15 +3464,14 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
       });
     }
 
-    // ── 5. Tracked 48 labels PDF (2 copies each) ──────────────────────────────
-    let labelsPdf = null;
-    try {
-      labelsPdf = await mergeLabels(labelBuffers, 1);
-    } catch (labErr) {
-      console.warn('[FullProcess] Labels merge failed (non-fatal):', labErr.message);
-    }
-
     // ── 6. S/17 packing slips (plain label area at bottom for physical label) ──
+    // Only this section ever ends up in the response (see step 9) — a
+    // "Tracked 48 labels" PDF and an "order records" PDF used to be built
+    // here too, in full, and then thrown away unused (never merged in,
+    // never read by the frontend). For a large batch that's a lot of wasted
+    // PDF generation — every extra order multiplied that waste — which is
+    // real memory/CPU pressure on exactly the runs most likely to trip it.
+    // Building only what's actually sent cuts that pressure for large runs.
     let s17Pdf = null;
     let s17Error = '';
     try {
@@ -3486,21 +3485,7 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
       console.warn('[FullProcess] S/17 PDF failed:', s17Err.message);
     }
 
-    // ── 8. Order records PDF ──────────────────────────────────────────────────
-    let recordsPdf = null;
-    let recordsError = '';
-    try {
-      const processedRows = rows.filter(r => processedShopifyIds.includes(String(r.id)));
-      const processedOrders = processedRows.map(r => typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data).filter(Boolean);
-      if (processedOrders.length) recordsPdf = Buffer.from(await buildRecordPdf(processedOrders));
-    } catch (recErr) {
-      recordsError = recErr.message;
-      console.warn('[FullProcess] Order records PDF failed (non-fatal):', recErr.message);
-    }
-
-    // ── 9. Merge all four sections into ONE PDF ────────────────────────────────
-    // Order: Tracked 48 Labels → S/17 Packing Slips → Manifest → Order Records
-    // const sections = [labelsPdf, s17Pdf, recordsPdf].filter(Boolean);
+    // ── 9. Merge into the final PDF ─────────────────────────────────────────
     const sections = [s17Pdf].filter(Boolean);
     const finalPdf = await mergeLabels(sections, 1);
 
@@ -3527,21 +3512,37 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
       backgroundJobs.set(fulfillJobId, { status: 'processing', total: processedShopifyIds.length, fulfilledCount: 0, errors: [] });
     }
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="royal_mail_${date}.pdf"`);
-    res.setHeader('X-Shipment-Count', String(labelMap.size));
-    res.setHeader('X-Order-Identifiers', allIdentifiers.join(','));
-    res.setHeader('X-Processed-Shopify-Ids', processedShopifyIds.join(','));
-    res.setHeader('X-Tracking-Numbers', JSON.stringify(trackingNumbers));
-    res.setHeader('X-Has-Labels', labelsPdf ? '1' : '0');
-    res.setHeader('X-Has-S17', s17Pdf ? '1' : '0');
-    res.setHeader('X-Has-Records', recordsPdf ? '1' : '0');
-    if (savedUrl) res.setHeader('X-Saved-File-Url', savedUrl);
-    if (fulfillJobId) res.setHeader('X-Fulfill-Job-Id', fulfillJobId);
-    if (recordsError) res.setHeader('X-Records-Error', safeHeaderValue(recordsError));
-    if (failedOrders.length) res.setHeader('X-Failed-Orders', failedOrders.map(r => r.orderNumber).join(','));
-    if (skipped.length) res.setHeader('X-Skipped-Orders', safeHeaderValue(skipped.map(s => `${s.orderNumber}:${s.reason}`).join(',')));
-    res.send(finalPdf);
+    // A build failure used to fall through to here with `sections` empty —
+    // mergeLabels() on an empty array happily saves a valid, zero-page PDF,
+    // so this shipped as a normal "successful" download that opened as one
+    // blank page, with the real error sitting unseen in server logs. Check
+    // the page count before deciding this actually succeeded.
+    const finalPageCount = await pdfPageCount(finalPdf);
+
+    if (finalPageCount === 0) {
+      console.error('[FullProcess] Final PDF has zero pages — S/17 generation failed.', { s17Error, orderCount: processedShopifyIds.length });
+      res.status(502).json({
+        message: `Failed to generate the S/17 packing-slip/label PDF (it came back empty). ${s17Error || 'Unknown error — check server logs.'} Royal Mail shipments were still created and orders are being fulfilled in Shopify — download labels directly from Click & Drop if you need them now.`,
+        s17Error: s17Error || null,
+        identifiers: allIdentifiers,
+        processedShopifyIds,
+        trackingNumbers,
+        fulfillJobId,
+      });
+    } else {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="royal_mail_${date}.pdf"`);
+      res.setHeader('X-Shipment-Count', String(labelMap.size));
+      res.setHeader('X-Order-Identifiers', allIdentifiers.join(','));
+      res.setHeader('X-Processed-Shopify-Ids', processedShopifyIds.join(','));
+      res.setHeader('X-Tracking-Numbers', JSON.stringify(trackingNumbers));
+      res.setHeader('X-Has-S17', s17Pdf ? '1' : '0');
+      if (savedUrl) res.setHeader('X-Saved-File-Url', savedUrl);
+      if (fulfillJobId) res.setHeader('X-Fulfill-Job-Id', fulfillJobId);
+      if (failedOrders.length) res.setHeader('X-Failed-Orders', failedOrders.map(r => r.orderNumber).join(','));
+      if (skipped.length) res.setHeader('X-Skipped-Orders', safeHeaderValue(skipped.map(s => `${s.orderNumber}:${s.reason}`).join(',')));
+      res.send(finalPdf);
+    }
 
     // ── 10. Auto-fulfill in Shopify + send notification email ────────────────
     // processedShopifyIds holds DB row IDs (used for row filtering above).
@@ -4158,6 +4159,9 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
       .filter(Boolean);
 
     const merged = Buffer.from(await buildS17Pdf(labelledOrders, labelMap));
+    if ((await pdfPageCount(merged)) === 0) {
+      return res.status(502).json({ message: 'Failed to generate the DPD label PDF (it came back empty). Check server logs.' });
+    }
     const dpdLabelsUrl = await saveGeneratedPdf(merged, 'dpd', `dpd_labels_${new Date().toISOString().slice(0, 10)}_${Date.now()}.pdf`);
 
     // Auto-fulfil runs in the background (below) so the PDF isn't held up by

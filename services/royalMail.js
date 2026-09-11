@@ -218,12 +218,26 @@ export async function mergeLabels(pdfBuffers, copies = 2) {
         const pages = await merged.copyPages(src, indices);
         pages.forEach(p => merged.addPage(p));
       }
-    } catch {
-      // skip malformed/empty pages
+    } catch (e) {
+      // A malformed/truncated buffer used to be dropped with zero trace —
+      // log it so a batch that comes out lighter than expected is explainable.
+      console.warn('[mergeLabels] Skipped a buffer that failed to load:', e.message);
     }
   }
   const bytes = await merged.save();
   return Buffer.from(bytes);
+}
+
+/** Page count of a PDF buffer, or 0 if it can't be parsed — used to catch a
+ * "successful" response that actually carries no content before it ships. */
+export async function pdfPageCount(buf) {
+  if (!buf) return 0;
+  try {
+    const doc = await PDFDocument.load(buf);
+    return doc.getPageCount();
+  } catch {
+    return 0;
+  }
 }
 
 /**
