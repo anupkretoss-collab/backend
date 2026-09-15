@@ -14,6 +14,42 @@ import { upsertOrder } from './orders.js';
 
 const router = express.Router();
 
+// ─── PDF-safe text ──────────────────────────────────────────────────────────
+// pdf-lib's standard fonts (Helvetica/HelveticaBold) only support WinAnsi
+// encoding (~Windows-1252) — font.widthOfTextAtSize()/drawText() THROW on any
+// character outside it (confirmed in production logs: "WinAnsi cannot encode
+// 'ń' (0x0144)" and "WinAnsi cannot encode '\n' (0x000a)"). A single order
+// with an accented name outside Western-European range (Polish/Czech/etc.),
+// or a literal line break in an address/note field, threw out of the whole
+// per-order loop — and since that loop has no per-order isolation, ONE such
+// order blanked the entire batch's PDF. Strip diacritics first (so "Łukasz"
+// degrades to "Lukasz" rather than "?ukasz"), then replace anything the font
+// still can't render with "?" instead of crashing.
+// A handful of common Latin letters (Polish Ł, Nordic Ø/Đ/Þ) don't decompose
+// under NFKD — they're distinct letterforms, not base+diacritic — so they'd
+// otherwise fall to "?" below despite being easy to transliterate sensibly.
+const NON_DECOMPOSING_MAP = {
+  'Ł': 'L', 'ł': 'l', 'Ø': 'O', 'ø': 'o', 'Đ': 'D', 'đ': 'd', 'Þ': 'Th', 'þ': 'th',
+};
+
+function sanitizeText(str, font) {
+  if (str === null || str === undefined || str === '') return str;
+  const s = String(str)
+    .replace(/[ŁłØøĐđÞþ]/g, ch => NON_DECOMPOSING_MAP[ch])
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '') // é→e, ń→n, etc.
+    .replace(/[\r\n\t]+/g, ' ');              // no embedded line breaks
+  let out = '';
+  for (const ch of s) {
+    try {
+      font.widthOfTextAtSize(ch, 10);
+      out += ch;
+    } catch {
+      out += '?';
+    }
+  }
+  return out;
+}
+
 // ─── Packing-slip item-row highlighting ────────────────────────────────────────
 // Flags anything a picker could miss at a glance: multi-unit lines (qty > 1,
 // highlighted yellow like a marker pen) and items with a real variant —
@@ -769,6 +805,7 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
 
   function truncateText(text, maxW, font, size) {
     if (!text) return '';
+    text = sanitizeText(text, font);
     if (font.widthOfTextAtSize(text, size) <= maxW) return text;
     while (text.length > 1 && font.widthOfTextAtSize(text + '…', size) > maxW) {
       text = text.slice(0, -1);
@@ -842,7 +879,7 @@ export async function buildS17Pdf(orders, labelMap = new Map()) {
         page.drawText(truncateText(line, COLW, regular, 9), { x: startX, y: cy, size: 9, font: regular, color: rgb(0, 0, 0) });
         cy -= 4 * MM;
       }
-      if (phone) { page.drawText(phone, { x: startX, y: cy, size: 8.5, font: regular, color: rgb(0, 0, 0) }); cy -= 4 * MM; }
+      if (phone) { page.drawText(truncateText(phone, COLW, regular, 8.5), { x: startX, y: cy, size: 8.5, font: regular, color: rgb(0, 0, 0) }); cy -= 4 * MM; }
       if (email) { page.drawText(truncateText(email, COLW, regular, 8), { x: startX, y: cy, size: 8, font: regular, color: rgb(0, 0, 0) }); cy -= 4 * MM; }
       return cy; // returns y after last line
     };
@@ -1030,6 +1067,7 @@ export async function buildRecordPdf(orders) {
 
   function tr(text, maxW, font, size) {
     if (!text) return '';
+    text = sanitizeText(text, font);
     if (font.widthOfTextAtSize(text, size) <= maxW) return text;
     while (text.length > 1 && font.widthOfTextAtSize(text + '…', size) > maxW) text = text.slice(0, -1);
     return text + '…';
