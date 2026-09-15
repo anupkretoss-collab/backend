@@ -2953,25 +2953,21 @@ function splitShippableOrders(orders) {
   const eligible = [];
   const skipped = [];
   for (const order of orders) {
-    // TEMP: disabled for testing — re-enable before real use, this is the
-    // guard that stops an already-fulfilled order from being shipped again.
-    // if (order.fulfillment_status === 'fulfilled') {
-    //   skipped.push({ orderNumber: order.order_number, shopifyOrderId: order.id, reason: 'already fulfilled' });
-    //   continue;
-    // }
-    // TEMP: disabled for testing — re-enable before real use, this is the
-    // guard that stops a refunded order from being shipped.
+    if (order.fulfillment_status === 'fulfilled') {
+      skipped.push({ orderNumber: order.order_number, shopifyOrderId: order.id, reason: 'already fulfilled' });
+      continue;
+    }
     // financial_status alone isn't reliable — Shopify can leave it as "paid"
     // on a partial/goodwill refund. This is a best-effort check against the
     // local (possibly stale) DB copy; markOrdersFulfilled() does the
     // authoritative live re-check right before actually fulfilling.
-    // const hasRefund = order.financial_status === 'refunded'
-    //   || order.financial_status === 'partially_refunded'
-    //   || (order.refunds || []).length > 0;
-    // if (hasRefund) {
-    //   skipped.push({ orderNumber: order.order_number, shopifyOrderId: order.id, reason: 'payment refunded' });
-    //   continue;
-    // }
+    const hasRefund = order.financial_status === 'refunded'
+      || order.financial_status === 'partially_refunded'
+      || (order.refunds || []).length > 0;
+    if (hasRefund) {
+      skipped.push({ orderNumber: order.order_number, shopifyOrderId: order.id, reason: 'payment refunded' });
+      continue;
+    }
     eligible.push(order);
   }
   return { eligible, skipped };
