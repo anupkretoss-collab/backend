@@ -19,6 +19,32 @@ dotenv.config();
 http.globalAgent.keepAlive = false;
 https.globalAgent.keepAlive = false;
 
+// There was no global safety net here before — an uncaught error ANYWHERE
+// in the process (a bad response shape from Royal Mail/DPD/Shopify, a stray
+// async call during a long bulk-processing run, anything) took the whole
+// Node process down with it, mid-request, leaving pm2 to restart it with no
+// record of why. That's the most likely explanation for the "pm2 process
+// just wasn't there" incidents — not a deliberate `pm2 delete`, but an
+// unlogged crash. This doesn't fix any specific bug; it makes the NEXT one
+// diagnosable instead of a silent restart, and stops one bad promise
+// somewhere from being fatal to every other in-flight request.
+process.on('uncaughtException', (err) => {
+  console.error('🔥 [FATAL] Uncaught exception — exiting so pm2 restarts cleanly:', err);
+  // Node's own guidance: process state after an uncaught exception is not
+  // reliable, so exit deliberately rather than keep serving from it. A
+  // short delay just lets this log line actually flush before pm2 restarts.
+  setTimeout(() => process.exit(1), 500);
+});
+
+process.on('unhandledRejection', (reason) => {
+  // Logged loudly but treated as non-fatal — a rejected promise from one
+  // background call (e.g. a DPD tracking lookup) shouldn't take the whole
+  // server down for every other in-flight request. If this ever turns out
+  // to leave the process in a bad state, this log line is what points at
+  // which call needs an explicit .catch()/await instead of guessing blind.
+  console.error('⚠️ [UNHANDLED REJECTION]', reason);
+});
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 import { runMigrations } from './services/db.js';

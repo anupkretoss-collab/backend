@@ -51,6 +51,19 @@ function safeHeaderValue(str, maxLen = 300) {
 
 const backgroundJobs = new Map();
 
+// Guards /royal-mail-full-process and /dpd-labels against a second request
+// for the SAME set of orders starting while the first is still running — the
+// scenario where a user refreshes mid-process (killing their view of the
+// response, but not the server-side work, which keeps creating shipments
+// and fulfilling orders in the background) and then retries, unaware the
+// first run is still in flight. Without this, both runs independently query
+// Click & Drop, see the order isn't there YET, and both try to create a
+// shipment for it — duplicate shipments. Keyed by the sorted order id set.
+const activeShipmentRuns = new Set();
+function shipmentRunKey(orderIds) {
+  return [...new Set((orderIds || []).map(String))].sort().join(',');
+}
+
 // In-memory cache for /meta — invalidated on sync
 let metaCache = null;
 let metaCacheAt = 0;
@@ -3351,6 +3364,13 @@ router.post('/royal-mail-manifest', authenticateToken, async (req, res) => {
 //   [S/17 packing slips with Tracked 48 label embedded] + [Manifest] + [Order Records]
 // The Tracked 48 label is embedded in the S/17 peelable section — no separate label pages.
 router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
+  const runKey = shipmentRunKey(req.body?.orderIds);
+  if (runKey && activeShipmentRuns.has(runKey)) {
+    return res.status(409).json({
+      message: 'These exact orders are already being processed by an earlier request that hasn\'t finished yet — probably a page refresh during a previous run. Wait for that one to complete (or check Click & Drop / the job status) before retrying, to avoid duplicate shipments.',
+    });
+  }
+  if (runKey) activeShipmentRuns.add(runKey);
   try {
     const { createShipment, listOrders, getLabel, mergeLabels, isConfigured } = await import('../services/royalMail.js');
     const { markOrdersFulfilled, fetchOrder } = await import('../services/shopify.js');
@@ -3622,6 +3642,8 @@ router.post('/royal-mail-full-process', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('royal-mail-full-process error:', err);
     if (!res.headersSent) res.status(500).json({ message: err.message });
+  } finally {
+    if (runKey) activeShipmentRuns.delete(runKey);
   }
 });
 
@@ -4115,12 +4137,19 @@ router.delete('/seed-test-order', authenticateToken, async (req, res) => {
 // ─── POST /api/orders/dpd-labels ─────────────────────────────────────────────
 // Body: { shipments: [{consignmentNumber, shipmentId}] }  OR legacy: { consignmentNumbers: [] }
 router.post('/dpd-labels', authenticateToken, async (req, res) => {
+  // Support both new format (shipments[]) and legacy (consignmentNumbers[])
+  let shipments = req.body.shipments || [];
+  if (!shipments.length && req.body.consignmentNumbers?.length) {
+    shipments = req.body.consignmentNumbers.map(cn => ({ consignmentNumber: cn, shipmentId: null }));
+  }
+  const runKey = shipmentRunKey(shipments.map(s => s.consignmentNumber));
+  if (runKey && activeShipmentRuns.has(runKey)) {
+    return res.status(409).json({
+      message: 'These exact shipments are already being processed by an earlier request that hasn\'t finished yet — probably a page refresh during a previous run. Wait for that one to complete before retrying, to avoid duplicate Shopify fulfilment.',
+    });
+  }
+  if (runKey) activeShipmentRuns.add(runKey);
   try {
-    // Support both new format (shipments[]) and legacy (consignmentNumbers[])
-    let shipments = req.body.shipments || [];
-    if (!shipments.length && req.body.consignmentNumbers?.length) {
-      shipments = req.body.consignmentNumbers.map(cn => ({ consignmentNumber: cn, shipmentId: null }));
-    }
     if (!shipments.length) return res.status(400).json({ message: 'shipments is required' });
 
     const { getLabel } = await import('../services/dpd.js');
@@ -4260,6 +4289,8 @@ router.post('/dpd-labels', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('dpd-labels error:', err);
     res.status(500).json({ message: err.message });
+  } finally {
+    if (runKey) activeShipmentRuns.delete(runKey);
   }
 });
 
